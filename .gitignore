@@ -1,0 +1,18 @@
+# Секреты — никогда не коммитим и не кладём в сборки
+deepseek_key.txt
+dist/deepseek_key.txt
+
+# Сборка и артефакты (регенерируются, не храним в репозитории)
+build/
+dist/
+release/
+*.exe
+*.zip
+*.pyc
+__pycache__/
+.pytest_cache/
+
+# Локальные логи/временное
+.remember/logs/
+.remember/tmp/
+.sorter/
