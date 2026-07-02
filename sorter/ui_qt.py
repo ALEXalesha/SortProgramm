@@ -11,7 +11,7 @@ from PyQt6.QtCore import Qt, QPoint, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QCheckBox, QVBoxLayout,
     QHBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
-    QLineEdit, QFileDialog,
+    QLineEdit, QFileDialog, QDialog,
 )
 
 from .config import Config
@@ -20,6 +20,7 @@ from .planner import plan, Move
 from .mover import apply
 from .util import rel_to
 from . import ai
+from . import history
 
 
 class _AiWorker(QThread):
@@ -43,7 +44,9 @@ class _AiWorker(QThread):
 STYLE = """
 #glass {
     background: rgba(22, 24, 32, 0.55);
-    border-radius: 16px;
+    /* Радиус совпадает со скруглением окна Windows 11 (DWMWCP_ROUND ≈ 8px):
+       если панель скруглить сильнее, в углах просвечивает акрил — светлый ореол. */
+    border-radius: 8px;
     border: 1px solid rgba(255, 255, 255, 0.18);
 }
 QLabel { color: rgba(255,255,255,0.92); background: transparent; }
@@ -98,6 +101,86 @@ QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
 QScrollBar::handle:vertical { background: rgba(255,255,255,0.25); border-radius: 5px; }
 QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
 """
+
+
+class HistoryDialog(QDialog):
+    """Список прошлых сортировок с возможностью откатить любую из них."""
+
+    def __init__(self, downloads_path, parent=None):
+        super().__init__(parent)
+        self.downloads_path = downloads_path
+        self.ops: list[history.Operation] = []
+
+        self.setWindowTitle("История перемещений")
+        self.resize(560, 420)
+        self.setStyleSheet(STYLE + "QDialog { background: #171922; }")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(12)
+
+        root.addWidget(QLabel("История перемещений", objectName="title"))
+
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Когда", "Файлов"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setShowGrid(False)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        root.addWidget(self.table, stretch=1)
+
+        bar = QHBoxLayout()
+        self.hint = QLabel("", objectName="status")
+        bar.addWidget(self.hint)
+        bar.addStretch(1)
+        self.undo_btn = QPushButton("↩ Отменить выбранную")
+        self.undo_btn.clicked.connect(self._undo_selected)
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(self.accept)
+        bar.addWidget(self.undo_btn)
+        bar.addWidget(close_btn)
+        root.addLayout(bar)
+
+        self._reload()
+
+    def _reload(self):
+        self.ops = history.list_operations(self.downloads_path)
+        self.table.setRowCount(len(self.ops))
+        for r, op in enumerate(self.ops):
+            when = op.when.strftime("%d.%m.%Y  %H:%M:%S")
+            self.table.setItem(r, 0, QTableWidgetItem(when))
+            self.table.setItem(r, 1, QTableWidgetItem(str(op.count)))
+        empty = not self.ops
+        self.undo_btn.setEnabled(not empty)
+        self.hint.setText(
+            "История пуста — ещё ничего не перемещалось." if empty
+            else f"Записей: {len(self.ops)}. Выбери строку, чтобы откатить.")
+
+    def _undo_selected(self):
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self.ops):
+            QMessageBox.information(self, "Не выбрано", "Выбери строку в списке.")
+            return
+        op = self.ops[row]
+        when = op.when.strftime("%d.%m.%Y %H:%M:%S")
+        ok = QMessageBox.question(
+            self, "Отменить сортировку",
+            f"Вернуть {op.count} файлов на исходные места\n"
+            f"(сортировка от {when})?")
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            history.undo_operation(op)
+        except OSError as exc:
+            QMessageBox.critical(self, "Ошибка отмены", str(exc))
+            return
+        self._reload()
 
 
 class GlassWindow(QWidget):
@@ -163,10 +246,13 @@ class GlassWindow(QWidget):
         clean_btn.clicked.connect(self.preview)
         self.ai_btn = QPushButton("✨ ИИ")
         self.ai_btn.clicked.connect(self.run_ai)
+        history_btn = QPushButton("🕘 История")
+        history_btn.clicked.connect(self.show_history)
         row.addWidget(browse)
         row.addWidget(open_btn)
         row.addWidget(clean_btn)
         row.addWidget(self.ai_btn)
+        row.addWidget(history_btn)
         return row
 
     def _row_3d(self):
@@ -279,6 +365,17 @@ class GlassWindow(QWidget):
             os.startfile(path)  # type: ignore[attr-defined]
         except OSError as exc:
             QMessageBox.critical(self, "Ошибка", str(exc))
+
+    def show_history(self):
+        self._sync_config()
+        root = Path(self.config.downloads_path)
+        if not self.config.downloads_path or not root.is_dir():
+            QMessageBox.information(self, "Папка не найдена", "Укажи существующую папку.")
+            return
+        dlg = HistoryDialog(self.config.downloads_path, self)
+        dlg.exec()
+        # После возможной отмены файлы вернулись — пересобираем план.
+        self.preview()
 
     def preview(self):
         self._sync_config()
