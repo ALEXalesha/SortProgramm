@@ -112,7 +112,7 @@ class HistoryDialog(QDialog):
         self.ops: list[history.Operation] = []
 
         self.setWindowTitle("История перемещений")
-        self.resize(560, 420)
+        self.resize(640, 580)
         self.setStyleSheet(STYLE + "QDialog { background: #171922; }")
 
         root = QVBoxLayout(self)
@@ -130,10 +130,22 @@ class HistoryDialog(QDialog):
             QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(
             QTableWidget.SelectionMode.SingleSelection)
+        self.table.currentCellChanged.connect(self._show_details)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         root.addWidget(self.table, stretch=1)
+
+        root.addWidget(QLabel("Что куда переместилось:", objectName="status"))
+        self.details = QTableWidget(0, 2)
+        self.details.setHorizontalHeaderLabels(["Файл", "Куда переместили"])
+        self.details.verticalHeader().setVisible(False)
+        self.details.setShowGrid(False)
+        self.details.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        dh = self.details.horizontalHeader()
+        dh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        dh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        root.addWidget(self.details, stretch=2)
 
         bar = QHBoxLayout()
         self.hint = QLabel("", objectName="status")
@@ -161,6 +173,24 @@ class HistoryDialog(QDialog):
         self.hint.setText(
             "История пуста — ещё ничего не перемещалось." if empty
             else f"Записей: {len(self.ops)}. Выбери строку, чтобы откатить.")
+        if empty:
+            self.details.setRowCount(0)
+        else:
+            self.table.selectRow(0)
+            self._show_details(0, 0, -1, -1)
+
+    def _show_details(self, row, _col=0, _prev_row=-1, _prev_col=-1):
+        if row < 0 or row >= len(self.ops):
+            self.details.setRowCount(0)
+            return
+        root = Path(self.downloads_path)
+        entries = self.ops[row].entries
+        self.details.setRowCount(len(entries))
+        for r, entry in enumerate(entries):
+            src = Path(entry.get("src", ""))
+            dst = Path(entry.get("dst", ""))
+            self.details.setItem(r, 0, QTableWidgetItem(rel_to(src, root)))
+            self.details.setItem(r, 1, QTableWidgetItem(rel_to(dst, root)))
 
     def _undo_selected(self):
         row = self.table.currentRow()
