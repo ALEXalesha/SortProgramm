@@ -9,8 +9,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from .config import Config
-from .scanner import scan
-from .planner import plan, Move
+from .planner import build_plan, Move
 from .mover import apply
 from .util import rel_to as _rel_to
 
@@ -93,8 +92,9 @@ class SorterApp:
             messagebox.showerror("Ошибка", str(exc))
 
     def preview(self):
-        files = scan(self.config.downloads_path, self.config)
-        self.moves = plan(files, self.config, send_3d_external=self.to_3d.get())
+        # Без ИИ: только корень загрузок (deep=False) + авторазбор All_3d по расширениям.
+        self.moves = build_plan(
+            self.config, send_3d_external=self.to_3d.get(), deep=False)
         self.tree.delete(*self.tree.get_children())
         root = Path(self.config.downloads_path)
         for mv in self.moves:
