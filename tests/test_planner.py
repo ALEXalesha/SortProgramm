@@ -87,12 +87,12 @@ def test_3d_model_stays_in_downloads_when_toggle_off(tmp_path):
     assert moves[0].dst == tmp_path / "Others" / "3D" / "part.3mf"
 
 
-def test_3d_model_goes_to_external_flat_when_toggle_on(tmp_path):
+def test_3d_model_goes_to_external_ext_subfolder_when_toggle_on(tmp_path):
     cfg = make_config(tmp_path)
     f = tmp_path / "part.obj"
     touch(f)
     moves = plan([f], cfg, send_3d_external=True)
-    assert moves[0].dst == tmp_path / "All_3d" / "part.obj"
+    assert moves[0].dst == tmp_path / "All_3d" / "obj" / "part.obj"
 
 
 def test_non_3d_file_unaffected_by_toggle(tmp_path):
@@ -112,3 +112,4 @@ def test_external_3d_name_collision_gets_suffix(tmp_path):
     moves = plan([a, b], cfg, send_3d_external=True)
     dsts = sorted(m.dst.name for m in moves)
     assert dsts == ["model (1).stl", "model.stl"]
+    assert all(m.dst.parent == tmp_path / "All_3d" / "stl" for m in moves)

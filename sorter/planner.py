@@ -43,7 +43,8 @@ def plan(files: list[Path], config: Config, send_3d_external: bool = False) -> l
     """План перемещений. Структура: Категория/Тип/файл (без подпапки расширения).
 
     Если send_3d_external=True, файлы 3D-моделей (по config.external_3d) едут
-    плоско во внешнюю папку (например C:/Drive/Alexey/All_3d).
+    во внешнюю папку, разложенные по подпапкам с именем расширения
+    (например C:/Drive/Alexey/All_3d/gcode, .../3mf).
     """
     root = Path(config.downloads_path)
     ext_3d = {e.lower() for e in config.external_3d.get("extensions", [])}
@@ -56,7 +57,7 @@ def plan(files: list[Path], config: Config, send_3d_external: bool = False) -> l
         category, file_type, extension = classify(src.name, _read_content(src), config)
 
         if send_3d_external and external_path is not None and extension in ext_3d:
-            dst = external_path / src.name
+            dst = external_path / extension / src.name
         else:
             dst = root / category / file_type / src.name
 
