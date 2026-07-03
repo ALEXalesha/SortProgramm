@@ -13,6 +13,11 @@ PrivilegesRequired=lowest
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+; Если старая версия запущена, она держит Сортировщик.exe и обновление «поверх»
+; падает с «DeleteFile код 5». Restart Manager сам находит процесс по файловому
+; дескриптору (кириллица в имени не мешает) и force принудительно его завершает.
+CloseApplications=force
+RestartApplications=no
 
 [Languages]
 Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
