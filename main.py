@@ -10,8 +10,7 @@ import sys
 from pathlib import Path
 
 from sorter.config import Config
-from sorter.scanner import scan
-from sorter.planner import plan
+from sorter.planner import build_plan
 from sorter.mover import apply
 from sorter.util import rel_to
 
@@ -24,16 +23,12 @@ else:
 CONFIG_PATH = BASE_DIR / "config.json"
 
 
-def build_plan(config: Config, send_3d_external: bool = False):
-    files = scan(config.downloads_path, config)
-    return plan(files, config, send_3d_external=send_3d_external)
-
-
 def run_cli(path: str | None, do_apply: bool, to_3d: bool) -> None:
     config = Config.load(CONFIG_PATH)
     if path:
         config.downloads_path = path
-    moves = build_plan(config, send_3d_external=to_3d)
+    # CLI — режим без ИИ: только корень загрузок (deep=False) + разбор All_3d.
+    moves = build_plan(config, send_3d_external=to_3d, deep=False)
 
     print(f"Папка: {config.downloads_path}")
     print(f"Найдено к перемещению: {len(moves)}\n")

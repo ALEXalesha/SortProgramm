@@ -31,6 +31,20 @@ def test_includes_files_inside_managed_folder(tmp_path):
     assert tmp_path / "Documents" / "a.docx" in found
 
 
+def test_deep_false_returns_only_root_files(tmp_path):
+    touch(tmp_path / "report.pdf")
+    touch(tmp_path / "Documents" / "a.docx")
+    found = scan(tmp_path, make_config(tmp_path), deep=False)
+    assert found == [tmp_path / "report.pdf"]
+
+
+def test_deep_false_still_skips_ignored_root_files(tmp_path):
+    touch(tmp_path / "keep.pdf")
+    touch(tmp_path / "desktop.ini")
+    found = scan(tmp_path, make_config(tmp_path), deep=False)
+    assert found == [tmp_path / "keep.pdf"]
+
+
 def test_excludes_files_inside_foreign_folder(tmp_path):
     touch(tmp_path / "games_pygame" / "main.py")
     found = scan(tmp_path, make_config(tmp_path))

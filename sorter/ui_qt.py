@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
 
 from .config import Config
 from .scanner import scan
-from .planner import plan, Move
+from .planner import build_plan, Move
 from .mover import apply
 from .util import rel_to
 from . import ai
@@ -407,7 +407,10 @@ class GlassWindow(QWidget):
         # После возможной отмены файлы вернулись — пересобираем план.
         self.preview()
 
-    def preview(self):
+    def preview(self, deep: bool = False):
+        """Строит план. deep=False — обычная сортировка (только корень загрузок),
+        deep=True — после ИИ (все файлы, включая подпапки). Папка All_3d
+        разбирается по расширениям в любом случае."""
         self._sync_config()
         root = Path(self.config.downloads_path)
         if not self.config.downloads_path or not root.is_dir():
@@ -415,8 +418,8 @@ class GlassWindow(QWidget):
             self.moves = []
             self.status.setText("Папка не найдена — укажи существующий путь.")
             return
-        files = scan(self.config.downloads_path, self.config)
-        self.moves = plan(files, self.config, send_3d_external=self.to_3d.isChecked())
+        self.moves = build_plan(
+            self.config, send_3d_external=self.to_3d.isChecked(), deep=deep)
         self.table.setRowCount(len(self.moves))
         for r, mv in enumerate(self.moves):
             self.table.setItem(r, 0, QTableWidgetItem(rel_to(mv.src, root)))
@@ -445,7 +448,7 @@ class GlassWindow(QWidget):
                 "Положи ключ в файл deepseek_key.txt рядом с программой\n"
                 "или задай переменную окружения DEEPSEEK_API_KEY.")
             return
-        files = scan(self.config.downloads_path, self.config)
+        files = scan(self.config.downloads_path, self.config, deep=True)
         if not files:
             self.status.setText("Файлов не найдено.")
             return
@@ -466,7 +469,7 @@ class GlassWindow(QWidget):
         self.config.overrides.update(mapping)
         self._save_overrides()
         self.status.setText(f"ИИ разложил {len(mapping)} файлов.")
-        self.preview()
+        self.preview(deep=True)
 
     def _ai_failed(self, err):
         self.ai_btn.setEnabled(True)

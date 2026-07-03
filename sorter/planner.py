@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .classifier import classify, extension_of
 from .config import Config
+from .scanner import scan
 
 TEXT_EXTENSIONS = {"txt", "md", "csv"}
 CONTENT_PREVIEW_CHARS = 2000
@@ -39,19 +40,36 @@ def _dedup(dst: Path, taken: set[Path]) -> Path:
         i += 1
 
 
-def plan(files: list[Path], config: Config, send_3d_external: bool = False) -> list[Move]:
+def _external_3d_path(config: Config) -> Path | None:
+    """Путь внешней папки 3D (All_3d), если он задан в конфиге."""
+    if not isinstance(config.external_3d, dict):
+        return None
+    raw = config.external_3d.get("path", "")
+    return Path(raw) if raw else None
+
+
+def plan(
+    files: list[Path],
+    config: Config,
+    send_3d_external: bool = False,
+    taken: set[Path] | None = None,
+) -> list[Move]:
     """План перемещений. Структура: Категория/Тип/файл (без подпапки расширения).
 
     Если send_3d_external=True, файлы 3D-моделей (по config.external_3d) едут
     во внешнюю папку, разложенные по подпапкам с именем расширения
     (например C:/Drive/Alexey/All_3d/gcode, .../3mf).
+
+    taken — общий набор уже занятых назначений; передаётся, когда план строится
+    по нескольким источникам (загрузки + All_3d), чтобы имена не сталкивались.
     """
     root = Path(config.downloads_path)
     ext_3d = {e.lower() for e in config.external_3d.get("extensions", [])}
-    external_path = Path(config.external_3d.get("path", "")) if config.external_3d else None
+    external_path = _external_3d_path(config)
 
     moves: list[Move] = []
-    taken: set[Path] = set()
+    if taken is None:
+        taken = set()
 
     for src in files:
         category, file_type, extension = classify(src.name, _read_content(src), config)
@@ -67,5 +85,61 @@ def plan(files: list[Path], config: Config, send_3d_external: bool = False) -> l
         dst = _dedup(dst, taken)
         taken.add(dst)
         moves.append(Move(src, dst))
+
+    return moves
+
+
+def plan_3d_folder(
+    files: list[Path],
+    config: Config,
+    taken: set[Path] | None = None,
+) -> list[Move]:
+    """Раскладка файлов из корня All_3d по подпапкам с именем расширения.
+
+    Каждый файл едет в All_3d/<расширение>/имя (part.gcode → All_3d/gcode/part.gcode).
+    Файлы без расширения оставляем на месте. ИИ здесь не нужен — только расширение.
+    """
+    external_path = _external_3d_path(config)
+    if external_path is None:
+        return []
+
+    moves: list[Move] = []
+    if taken is None:
+        taken = set()
+
+    for src in files:
+        extension = extension_of(src.name)
+        if not extension:
+            continue  # без расширения — не трогаем
+        dst = external_path / extension / src.name
+        if src == dst:
+            continue  # уже в своей подпапке
+        dst = _dedup(dst, taken)
+        taken.add(dst)
+        moves.append(Move(src, dst))
+
+    return moves
+
+
+def build_plan(
+    config: Config,
+    send_3d_external: bool = False,
+    deep: bool = False,
+) -> list[Move]:
+    """Полный план: загрузки + внешняя папка All_3d (всегда по расширениям).
+
+    deep управляет только загрузками: False — без ИИ (только корень загрузок),
+    True — режим ИИ (корень + управляемые папки рекурсивно). Папка All_3d
+    разбирается всегда, если её путь задан в конфиге, независимо от галочки 3D.
+    """
+    taken: set[Path] = set()
+
+    downloads = scan(config.downloads_path, config, deep=deep)
+    moves = plan(downloads, config, send_3d_external=send_3d_external, taken=taken)
+
+    external_path = _external_3d_path(config)
+    if external_path is not None:
+        loose = scan(external_path, config, deep=False)
+        moves += plan_3d_folder(loose, config, taken=taken)
 
     return moves

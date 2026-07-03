@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from sorter.planner import plan, Move
+from sorter.planner import plan, plan_3d_folder, build_plan, Move
 from sorter.config import Config
 
 
@@ -113,3 +113,67 @@ def test_external_3d_name_collision_gets_suffix(tmp_path):
     dsts = sorted(m.dst.name for m in moves)
     assert dsts == ["model (1).stl", "model.stl"]
     assert all(m.dst.parent == tmp_path / "All_3d" / "stl" for m in moves)
+
+
+# --- разбор внешней папки All_3d по расширениям ---
+
+def test_3d_folder_sorts_every_file_by_extension(tmp_path):
+    cfg = make_config(tmp_path)
+    all3d = tmp_path / "All_3d"
+    loose = [all3d / "part.gcode", all3d / "cube.3mf", all3d / "preview.png"]
+    moves = plan_3d_folder(loose, cfg)
+    by_name = {m.src.name: m.dst for m in moves}
+    assert by_name["part.gcode"] == all3d / "gcode" / "part.gcode"
+    assert by_name["cube.3mf"] == all3d / "3mf" / "cube.3mf"
+    assert by_name["preview.png"] == all3d / "png" / "preview.png"
+
+
+def test_3d_folder_leaves_extensionless_file(tmp_path):
+    cfg = make_config(tmp_path)
+    moves = plan_3d_folder([tmp_path / "All_3d" / "README"], cfg)
+    assert moves == []
+
+
+def test_3d_folder_file_already_in_subfolder_is_skipped(tmp_path):
+    cfg = make_config(tmp_path)
+    placed = tmp_path / "All_3d" / "gcode" / "part.gcode"
+    moves = plan_3d_folder([placed], cfg)
+    assert moves == []
+
+
+# --- build_plan: загрузки (deep) + All_3d всегда ---
+
+def test_build_plan_shallow_ignores_downloads_subfolders(tmp_path):
+    cfg = make_config(tmp_path)
+    touch(tmp_path / "задача.pdf")
+    touch(tmp_path / "3D" / "old.3mf")  # уже в подпапке загрузок
+    moves = build_plan(cfg, deep=False)
+    srcs = {m.src for m in moves}
+    assert tmp_path / "задача.pdf" in srcs
+    assert tmp_path / "3D" / "old.3mf" not in srcs
+
+
+def test_build_plan_deep_includes_downloads_subfolders(tmp_path):
+    cfg = make_config(tmp_path)
+    touch(tmp_path / "3D" / "old.obj")
+    moves = build_plan(cfg, deep=True)
+    srcs = {m.src for m in moves}
+    assert tmp_path / "3D" / "old.obj" in srcs
+
+
+def test_build_plan_always_sorts_all_3d_folder(tmp_path):
+    cfg = make_config(tmp_path)
+    touch(tmp_path / "All_3d" / "part.gcode")
+    moves = build_plan(cfg, deep=False)  # даже без изменений в загрузках
+    dsts = {m.dst for m in moves}
+    assert tmp_path / "All_3d" / "gcode" / "part.gcode" in dsts
+
+
+def test_build_plan_no_collision_between_downloads_and_all_3d(tmp_path):
+    cfg = make_config(tmp_path)
+    touch(tmp_path / "part.gcode")             # 3D-файл из загрузок → All_3d/gcode
+    touch(tmp_path / "All_3d" / "part.gcode")  # одноимённый уже в All_3d
+    moves = build_plan(cfg, send_3d_external=True, deep=False)
+    gcode_dsts = sorted(m.dst.name for m in moves
+                        if m.dst.parent == tmp_path / "All_3d" / "gcode")
+    assert gcode_dsts == ["part (1).gcode", "part.gcode"]
