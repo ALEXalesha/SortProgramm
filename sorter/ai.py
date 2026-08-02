@@ -114,14 +114,40 @@ def parse_ai_response(content: str, valid_categories: list[str]) -> dict[str, st
     return result
 
 
+# Чем пробуем читать `deepseek_key.txt`. Файл создаёт человек — как правило
+# Блокнотом, а он предлагает и «UTF-8 с BOM», и «UTF-16 LE». Ключ внутри всё
+# равно из латиницы и дефисов, так что дело только в том, чем его раскодировать.
+# `utf-8-sig` первым: он читает и обычный UTF-8, и вариант с меткой в начале.
+_KEY_ENCODINGS = ("utf-8-sig", "utf-16")
+
+
 def load_api_key(base_dir: Path) -> str | None:
-    """Ключ из переменной окружения или файла deepseek_key.txt рядом с программой."""
+    """Ключ из переменной окружения или файла deepseek_key.txt рядом с программой.
+
+    Читается осторожно, потому что ключ кладут руками. UTF-16 из Блокнота
+    ронял `read_text(encoding="utf-8")` через UnicodeDecodeError — а это
+    ValueError, не OSError, поэтому его не ловил никто по дороге. В окне такое
+    исключение прилетает внутрь слота PyQt, где необработанное исключение гасит
+    процесс целиком: нажатие «✨ИИ» закрывало программу молча.
+
+    Метку BOM у «UTF-8 с BOM» тоже надо снять. Программа с ней не падала, но
+    невидимый символ уезжал в заголовок Authorization, DeepSeek отвечал
+    «неверный ключ», и найти причину было нельзя: в файле на вид ровно то,
+    что выдал сайт.
+
+    Файл, который не разобрать ничем (или который не открыть), — это «ключа
+    нет». Окно на такой ответ говорит, куда его положить: подсказка на месте,
+    программа жива.
+    """
     env = os.environ.get("DEEPSEEK_API_KEY")
     if env:
         return env.strip()
     key_file = Path(base_dir) / KEY_FILENAME
-    if key_file.exists():
-        text = key_file.read_text(encoding="utf-8").strip()
+    for encoding in _KEY_ENCODINGS:
+        try:
+            text = key_file.read_text(encoding=encoding).strip()
+        except (OSError, ValueError):
+            continue
         if text:
             return text
     return None

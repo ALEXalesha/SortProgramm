@@ -88,7 +88,14 @@ def main() -> None:
     parser.add_argument("--tk", action="store_true", help="старый интерфейс Tkinter")
     args = parser.parse_args()
 
-    if args.cli or args.path:
+    # `--apply`, `--deep`, `--to3d` осмысленны только в консоли: окно берёт то же
+    # самое из галочек. Раньше в CLI уводили лишь `--cli` и `--path`, поэтому
+    # документированный `python main.py --apply --to3d` открывал окно и молча
+    # терял оба флага — человек ждал, что файлы разъедутся по папкам, а получал
+    # нетронутые загрузки. Флаг, который меняет файлы на диске, терять нельзя.
+    wants_cli = (args.cli or args.path or args.apply
+                 or args.deep or args.to3d is not None)
+    if wants_cli:
         run_cli(args.path, args.apply, args.to3d, args.deep)
     elif args.tk:
         from sorter.ui import launch

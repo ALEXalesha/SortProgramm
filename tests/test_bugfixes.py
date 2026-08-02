@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 
+from sorter.ai import load_api_key
 from sorter.config import Config
 from sorter.classifier import explain_category, match_category, match_type
 from sorter.history import list_operations
@@ -547,3 +548,51 @@ def test_category_named_by_absolute_path_is_dropped(tmp_path):
 
     assert list(cfg.categories) == ["Медиа"]
     assert cfg.problems
+
+
+# --- ключ ИИ, сохранённый в чужой кодировке ---
+
+
+def test_api_key_saved_as_utf16_is_read(tmp_path):
+    """Блокнот умеет сохранять `deepseek_key.txt` в UTF-16 — и чтение падало.
+
+    `read_text(encoding="utf-8")` бросает на таком файле UnicodeDecodeError.
+    Это ValueError, а не OSError, поэтому мимо него проходили все проверки в
+    программе: ключ читается без единого `try`. В окне исключение прилетало
+    внутрь слота PyQt, а там необработанное исключение гасит процесс целиком —
+    нажатие «✨ИИ» закрывало программу молча, без сообщения и без journal'а.
+    """
+    (tmp_path / "deepseek_key.txt").write_text("sk-abc123", encoding="utf-16")
+
+    assert load_api_key(tmp_path) == "sk-abc123"
+
+
+def test_api_key_with_utf8_bom_is_read(tmp_path):
+    """Тот же Блокнот, режим «UTF-8 с BOM»: метка приклеивалась к ключу.
+
+    Программа не падала, но ключ уезжал в заголовок Authorization вместе с
+    невидимым символом — DeepSeek отвечал «неверный ключ», и понять почему
+    было нельзя: в файле на вид ровно то, что выдал сайт.
+    """
+    (tmp_path / "deepseek_key.txt").write_text("sk-abc123", encoding="utf-8-sig")
+
+    assert load_api_key(tmp_path) == "sk-abc123"
+
+
+def test_unreadable_api_key_file_gives_no_key_instead_of_crash(tmp_path):
+    """Файл, который не разобрать ничем: ответ — «ключа нет», а не падение.
+
+    Окно на пустой ответ показывает понятное «Положи ключ в deepseek_key.txt».
+    Это лучше любого исключения: подсказка на месте, программа жива.
+    """
+    (tmp_path / "deepseek_key.txt").write_bytes(b"\xff\xfe\x41")
+
+    assert load_api_key(tmp_path) is None
+
+
+def test_env_key_still_wins_over_file(tmp_path, monkeypatch):
+    """Переменная окружения остаётся главнее файла."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-from-env")
+    (tmp_path / "deepseek_key.txt").write_text("sk-from-file", encoding="utf-8")
+
+    assert load_api_key(tmp_path) == "sk-from-env"
