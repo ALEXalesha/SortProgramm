@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from sorter.config import Config
-from sorter.classifier import explain_category, match_category
+from sorter.classifier import explain_category, match_category, match_type
 from sorter.history import list_operations
 from sorter.mover import apply, undo
 from sorter.planner import build_plan, Move
@@ -407,3 +407,143 @@ def test_scan_survives_unreadable_folder(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "iterdir", denied)
     assert scan(tmp_path, cfg, deep=False) == []
+
+
+# --- расширения, записанные заглавными ---
+
+
+def test_type_map_matches_extension_written_in_capitals():
+    """Список расширений в rules.json правят руками, и заглавные там неизбежны.
+
+    Ключевые слова категорий приводятся к нижнему регистру, расширения внешней
+    папки 3D — тоже, а карта типов сравнивала как есть. `"Documents": ["PDF"]`
+    молча переставала совпадать, и все документы уезжали в `Misc`: раскладка
+    неверная, а жалоб никаких — самый неприятный вид поломки.
+    """
+    assert match_type("pdf", {"Documents": ["PDF"]}) == "Documents"
+    assert match_type("PDF", {"Documents": ["pdf"]}) == "Documents"
+
+
+# --- испорченный журнал отмены ---
+
+
+def test_undo_survives_broken_journal(tmp_path):
+    """Оборванная запись журнала роняла откат стеком вместо сообщения.
+
+    Записи внутри журнала уже разбираются осторожно (`entries_of`), а сам файл
+    читался напрямую: `json.loads` на обрезанном файле бросает ValueError, а
+    окно истории ловит только OSError — и программа падала целиком.
+    """
+    log = tmp_path / "undo_20260101_010101.json"
+    log.write_text('[{"src": "a", "dst"', encoding="utf-8")
+
+    notes = undo(log)
+
+    assert notes, "о нечитаемом журнале надо сказать, а не падать"
+    assert "журнал" in notes[0][1].lower()
+
+
+# --- пустые папки после отката ---
+
+
+def test_undo_removes_folders_it_emptied(tmp_path):
+    """После отката в загрузках оставалась гора пустых папок программы.
+
+    Сортировка за собой убирает (`_cleanup_emptied`), а откат — нет, хотя
+    опустошает ровно те же папки. Снаружи «отменить» выглядело как половина
+    отмены: файлы на месте, а созданный программой каркас никуда не делся.
+    """
+    cfg = make_config(tmp_path)
+    touch(tmp_path / "клип.mp4")
+    result = apply(build_plan(cfg), cfg, dry_run=False)
+    assert (tmp_path / "Медиа" / "Videos").is_dir()
+
+    undo(result.undo_log, cfg)
+
+    assert (tmp_path / "клип.mp4").is_file()
+    assert not (tmp_path / "Медиа").exists(), "пустая папка программы осталась"
+
+
+def test_undo_keeps_folder_that_still_has_files(tmp_path):
+    cfg = make_config(tmp_path)
+    touch(tmp_path / "клип.mp4")
+    result = apply(build_plan(cfg), cfg, dry_run=False)
+    touch(tmp_path / "Медиа" / "Videos" / "чужое.mp4")
+
+    undo(result.undo_log, cfg)
+
+    assert (tmp_path / "Медиа" / "Videos" / "чужое.mp4").is_file()
+
+
+def test_undo_keeps_foreign_folder(tmp_path):
+    """Папку не из `managed_folders` откат не сносит, даже если она опустела."""
+    cfg = make_config(tmp_path)
+    src = touch(tmp_path / "своя папка" / "клип.mp4")
+    log = tmp_path / "undo.json"
+    log.write_text(
+        json.dumps([{"src": str(tmp_path / "клип.mp4"), "dst": str(src)}]),
+        encoding="utf-8")
+
+    undo(log, cfg)
+
+    assert (tmp_path / "своя папка").is_dir()
+
+
+# --- категория, уводящая файлы из загрузок ---
+
+
+def test_override_with_absolute_path_is_rejected(tmp_path):
+    """Категория уходит в `root / категория / тип`, а абсолютный кусок в `Path`
+    отбрасывает всё слева: `C:/Windows/Temp` вместо категории уносит файл из
+    загрузок совсем в другое место, и об этом никто не узнаёт.
+    """
+    (tmp_path / "config.json").write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "overrides.json").write_text(
+        json.dumps({"секрет.pdf": "C:/Windows/Temp"}, ensure_ascii=False),
+        encoding="utf-8")
+
+    cfg = Config.load(tmp_path / "config.json")
+
+    assert "секрет.pdf" not in cfg.overrides
+    assert cfg.problems
+
+
+def test_override_with_parent_reference_is_rejected(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "overrides.json").write_text(
+        json.dumps({"секрет.pdf": "../../чужое"}, ensure_ascii=False),
+        encoding="utf-8")
+
+    cfg = Config.load(tmp_path / "config.json")
+
+    assert "секрет.pdf" not in cfg.overrides
+
+
+def test_nested_category_still_allowed(tmp_path):
+    """`Учёба/2026` — обычная вложенная раскладка, ломать её незачем."""
+    (tmp_path / "config.json").write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "overrides.json").write_text(
+        json.dumps({"конспект.pdf": "Учёба/2026"}, ensure_ascii=False),
+        encoding="utf-8")
+
+    cfg = Config.load(tmp_path / "config.json")
+
+    assert cfg.overrides["конспект.pdf"] == "Учёба/2026"
+
+
+def test_category_named_by_absolute_path_is_dropped(tmp_path):
+    """То же самое, но категория объявлена путём в самих правилах."""
+    (tmp_path / "config.json").write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(
+        json.dumps({"categories": {"C:/Windows/Temp": ["секрет"], "Медиа": ["клип"]}},
+                   ensure_ascii=False),
+        encoding="utf-8")
+
+    cfg = Config.load(tmp_path / "config.json")
+
+    assert list(cfg.categories) == ["Медиа"]
+    assert cfg.problems

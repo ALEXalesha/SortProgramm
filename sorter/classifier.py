@@ -37,10 +37,18 @@ def extension_of(filename: str) -> str:
 
 
 def match_type(extension: str, type_map: dict[str, list[str]], fallback: str = "Misc") -> str:
-    """Тип файла по карте расширение→тип. Иначе fallback."""
+    """Тип файла по карте расширение→тип. Иначе fallback.
+
+    Регистр не важен с обеих сторон. Карту типов README предлагает править
+    руками, и `"Documents": ["PDF"]` там появляется само собой — а сравнение
+    шло с приведённым к нижнему регистру расширением против списка как есть.
+    Совпадений не было, и все документы молча уезжали в `Misc`: раскладка
+    неверная, жалоб никаких. Ключевые слова категорий и расширения внешней
+    папки 3D приводятся к одному регистру давно, карта типов — нет.
+    """
     ext = extension.lower()
     for type_name, extensions in type_map.items():
-        if ext in extensions:
+        if any(ext == str(e).lower() for e in extensions):
             return type_name
     return fallback
 

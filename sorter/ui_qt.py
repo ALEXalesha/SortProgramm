@@ -126,9 +126,12 @@ def _notes_text(notes: list[tuple[str, str]], limit: int = 10) -> str:
 class HistoryDialog(QDialog):
     """Список прошлых сортировок с возможностью откатить любую из них."""
 
-    def __init__(self, downloads_path, parent=None):
+    def __init__(self, config: Config, parent=None):
         super().__init__(parent)
-        self.downloads_path = downloads_path
+        # Конфиг, а не один путь: откат убирает за собой опустевшие папки
+        # программы, а для этого ему нужен список `managed_folders`.
+        self.config = config
+        self.downloads_path = config.downloads_path
         self.ops: list[history.Operation] = []
 
         self.setWindowTitle("История перемещений")
@@ -226,7 +229,7 @@ class HistoryDialog(QDialog):
         if ok != QMessageBox.StandardButton.Yes:
             return
         try:
-            notes = history.undo_operation(op)
+            notes = history.undo_operation(op, self.config)
         except OSError as exc:
             QMessageBox.critical(self, "Ошибка отмены", str(exc))
             return
@@ -446,7 +449,7 @@ class GlassWindow(QWidget):
         if not self.config.downloads_path or not root.is_dir():
             QMessageBox.information(self, "Папка не найдена", "Укажи существующую папку.")
             return
-        dlg = HistoryDialog(self.config.downloads_path, self)
+        dlg = HistoryDialog(self.config, self)
         dlg.exec()
         # После возможной отмены файлы вернулись — пересобираем план.
         self.preview()

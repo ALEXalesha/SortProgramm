@@ -28,6 +28,15 @@ class SorterApp:
         self._build_table(root)
         self._build_footer(root)
 
+        # Про испорченные настройки предупреждали окно PyQt и CLI, а этот
+        # интерфейс молчал: без правил всё уезжает в Others, и снаружи это
+        # выглядит как нормальный план. Сказать надо до «Применить».
+        if self.config.problems:
+            messagebox.showwarning(
+                "Настройки прочитаны не полностью",
+                "\n".join(self.config.problems)
+                + "\n\nПрограмма запустилась, но раскладка может быть неверной.")
+
     # --- разметка ---
 
     def _build_header(self, root):
@@ -98,6 +107,16 @@ class SorterApp:
             messagebox.showerror("Ошибка", str(exc))
 
     def preview(self):
+        # Опечатка в пути выглядела ровно как прибранная папка: «План готов:
+        # 0 шт.». Окно PyQt и CLI в этом случае говорят «Папка не найдена» —
+        # здесь должно быть то же самое, иначе ноль ничего не значит.
+        if not Path(self.config.downloads_path).is_dir():
+            self.tree.delete(*self.tree.get_children())
+            self.moves = []
+            self.status.set(
+                f"Папка не найдена: {self.config.downloads_path}")
+            return
+
         # Галочка «Переразложить старое» включает разбор папок, которые программа
         # создала сама. Чужие папки не трогаются ни в каком режиме.
         self.moves = build_plan(

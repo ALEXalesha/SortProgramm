@@ -150,7 +150,7 @@ def entries_of(raw) -> list[dict[str, str]]:
     return good
 
 
-def undo(undo_log: Path | str) -> list[tuple[str, str]]:
+def undo(undo_log: Path | str, config: Config | None = None) -> list[tuple[str, str]]:
     """Возвращает файлы на исходные места. Отдаёт список оговорок.
 
     Если исходный путь к моменту отката снова занят, `shutil.move` повёл бы себя
@@ -158,9 +158,23 @@ def undo(undo_log: Path | str) -> list[tuple[str, str]]:
     а файл мог бы затереть. Поэтому занятый путь не трогаем — возвращаем рядом,
     под свободным именем, и сообщаем об этом наверх. Молчаливое вложение хуже
     любой ошибки: снаружи кажется, что откат прошёл, а данные перепутаны.
+
+    `config` нужен, чтобы убрать за собой папки, опустевшие из-за отката. Без
+    него откат возвращал файлы, но оставлял в загрузках весь каркас из папок
+    программы — снаружи это выглядело как отмена наполовину.
     """
-    entries = json.loads(Path(undo_log).read_text(encoding="utf-8"))
+    log_path = Path(undo_log)
+    try:
+        entries = json.loads(log_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        # Записи внутри журнала разбираются осторожно (`entries_of`), а сам файл
+        # читался напрямую: на оборванной записи `json.loads` бросает ValueError,
+        # который окно истории не ловит, — и программа падала целиком вместо
+        # того, чтобы сказать, что откатывать нечем.
+        return [(str(log_path), f"журнал отмены не читается: {exc}")]
+
     notes: list[tuple[str, str]] = []
+    restored: list[dict[str, str]] = []
     for entry in reversed(entries_of(entries)):
         src, dst = Path(entry["src"]), Path(entry["dst"])
         if not dst.exists():
@@ -178,4 +192,12 @@ def undo(undo_log: Path | str) -> list[tuple[str, str]]:
             shutil.move(str(dst), str(target))
         except OSError as exc:
             notes.append((str(dst), str(exc)))
+        else:
+            restored.append({"src": str(dst), "dst": str(target)})
+
+    if config is not None:
+        # Откат опустошает ровно те же папки, которые наполнила сортировка,
+        # поэтому и убирается тем же способом — от места, откуда унесли файл,
+        # вверх, пока папки пустые и принадлежат программе.
+        _cleanup_emptied(restored, config)
     return notes

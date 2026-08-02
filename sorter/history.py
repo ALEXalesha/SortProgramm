@@ -80,8 +80,11 @@ def list_operations(downloads_path: str | Path) -> list[Operation]:
     return ops
 
 
-def undo_operation(op: Operation) -> list[tuple[str, str]]:
+def undo_operation(op: Operation, config=None) -> list[tuple[str, str]]:
     """Откатывает операцию и убирает её лог. Возвращает список оговорок.
+
+    `config` передаётся дальше в `mover.undo`, чтобы за откатом убрались папки
+    программы, опустевшие из-за него.
 
     Оговорка — это когда файл вернулся не туда, куда собирался: исходный путь
     оказался занят. Список пустой, если всё легло на свои места. Показать его
@@ -97,7 +100,7 @@ def undo_operation(op: Operation) -> list[tuple[str, str]]:
     Что вернулось, а что нет, спрашиваем у файловой системы: пропал файл по
     новому пути — значит, уехал обратно.
     """
-    notes = _undo(op.log_path)
+    notes = _undo(op.log_path, config)
     left = [e for e in op.entries if Path(e["dst"]).exists()]
     try:
         if left:

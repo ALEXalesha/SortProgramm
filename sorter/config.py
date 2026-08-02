@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -43,6 +44,30 @@ RULE_KEYS = (
     "fallback_type",
 )
 USER_KEYS = ("downloads_path", "external_3d")
+
+
+_SEPARATORS = re.compile(r"[\\/]")
+
+
+def _is_folder_name(value: str) -> bool:
+    """Годится ли строка как имя папки внутри загрузок.
+
+    Категория и тип уходят прямо в `root / категория / тип`, а `Path` устроен
+    так, что абсолютный кусок отбрасывает всё слева: `Path("D:/Загрузки") /
+    "C:/Windows/Temp"` — это просто `C:/Windows/Temp`. Значит, полный путь,
+    вписанный вместо категории (опечатка, вставка не в то поле, правка руками),
+    молча уносит файлы из загрузок совсем в другое место. `..` делает то же
+    самое. Это худший исход из возможных: программа отчитывается об успешной
+    сортировке, а файлов в загрузках больше нет и искать их негде.
+
+    Вложенная категория (`Учёба/2026`) — обычное дело, её не трогаем.
+    """
+    parts = [p for p in _SEPARATORS.split(value) if p]
+    if not parts or value[0] in "\\/":
+        return False
+    if ":" in parts[0]:  # буква диска
+        return False
+    return ".." not in parts and "." not in parts
 
 
 def _read_json(path: Path, problems: list[str]) -> dict | None:
@@ -113,6 +138,12 @@ def _rule_map(raw, where: str, key: str, problems: list[str]) -> dict[str, list[
     for name, values in raw.items():
         if not isinstance(name, str):
             continue
+        # Имя раздела — это имя папки: категория или тип. Путь вместо него
+        # уводит файлы из загрузок (см. `_is_folder_name`).
+        if not _is_folder_name(name):
+            problems.append(
+                f"{where}: {key} → «{name}» — это путь, а не имя папки. Пропущено.")
+            continue
         if not isinstance(values, list):
             problems.append(f"{where}: {key} → «{name}» — не список. Пропущено.")
             continue
@@ -120,11 +151,18 @@ def _rule_map(raw, where: str, key: str, problems: list[str]) -> dict[str, list[
     return good
 
 
-def _text_map(raw, where: str, key: str, problems: list[str]) -> dict[str, str]:
+def _text_map(
+    raw, where: str, key: str, problems: list[str], folders: bool = False
+) -> dict[str, str]:
     """Раздел вида «имя → строка» (`overrides`, `category_hints`).
 
     Категория из `overrides.json` уходит в `Path()`, и число вместо неё роняло
     построение плана целиком — и в окне, и в CLI.
+
+    `folders=True` — значение станет именем папки (так у `overrides`). Тогда
+    путь вместо категории отбраковывается: файл уехал бы из загрузок
+    неизвестно куда, см. `_is_folder_name`. Подсказки категорий (`category_hints`)
+    — обычный текст, там проверять нечего.
     """
     if raw is None:
         return {}
@@ -133,10 +171,14 @@ def _text_map(raw, where: str, key: str, problems: list[str]) -> dict[str, str]:
         return {}
     good: dict[str, str] = {}
     for name, value in raw.items():
-        if isinstance(name, str) and isinstance(value, str):
-            good[name] = value
-        else:
+        if not isinstance(name, str) or not isinstance(value, str):
             problems.append(f"{where}: запись «{name}» — не строка. Пропущена.")
+            continue
+        if folders and value and not _is_folder_name(value):
+            problems.append(
+                f"{where}: «{name}» → «{value}» — это путь, а не категория. Пропущено.")
+            continue
+        good[name] = value
     return good
 
 
@@ -151,11 +193,19 @@ def _text_list(raw, where: str, key: str, problems: list[str]) -> list[str]:
 
 
 def _text(raw, default: str, where: str, key: str, problems: list[str]) -> str:
-    """Строковая настройка с запасным значением (`fallback_category`/`_type`)."""
+    """Имя запасной папки (`fallback_category`/`fallback_type`).
+
+    Сюда попадает всё, что не опознано, — то есть путь вместо запасной категории
+    утащил бы из загрузок не один файл, а весь неопознанный хвост.
+    """
     if raw is None:
         return default
     if not isinstance(raw, str) or not raw:
         problems.append(f"{where}: {key} — не строка. Взято «{default}».")
+        return default
+    if not _is_folder_name(raw):
+        problems.append(
+            f"{where}: {key} — это путь, а не имя папки. Взято «{default}».")
         return default
     return raw
 
@@ -227,7 +277,7 @@ class Config:
             ignore=_text_list(rules.get("ignore"), rules_name, "ignore", problems),
             overrides=_text_map(
                 _read_json(path.with_name(OVERRIDES_FILENAME), problems),
-                overrides_name, "правила", problems),
+                overrides_name, "правила", problems, folders=True),
             external_3d=_clean_3d(data.get("external_3d"), problems),
             fallback_category=_text(
                 rules.get("fallback_category"), "Others",
