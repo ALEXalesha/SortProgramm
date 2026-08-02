@@ -94,6 +94,72 @@ def _clean_3d(raw, problems: list[str]) -> dict:
     return data
 
 
+def _rule_map(raw, where: str, key: str, problems: list[str]) -> dict[str, list[str]]:
+    """Раздел вида «категория → список слов» (`categories`, `patterns`, `type_map`).
+
+    Правила README предлагает править руками, а отсюда они уходят прямо в
+    `.items()`: раздел списком вместо объекта ронял программу на первом же
+    файле. Список слов строкой не ронял ничего — и это хуже: `"Медиа": "клип"`
+    перебирается по буквам, каждая работает как ключевое слово, и в «Медиа»
+    уезжает вообще всё. Молчаливую неверную раскладку замечают, когда файлы
+    уже разложены, поэтому такой раздел выбрасываем с жалобой.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        problems.append(f"{where}: {key} — не объект. Раздел пропущен.")
+        return {}
+    good: dict[str, list[str]] = {}
+    for name, values in raw.items():
+        if not isinstance(name, str):
+            continue
+        if not isinstance(values, list):
+            problems.append(f"{where}: {key} → «{name}» — не список. Пропущено.")
+            continue
+        good[name] = [v for v in values if isinstance(v, str)]
+    return good
+
+
+def _text_map(raw, where: str, key: str, problems: list[str]) -> dict[str, str]:
+    """Раздел вида «имя → строка» (`overrides`, `category_hints`).
+
+    Категория из `overrides.json` уходит в `Path()`, и число вместо неё роняло
+    построение плана целиком — и в окне, и в CLI.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        problems.append(f"{where}: {key} — не объект. Раздел пропущен.")
+        return {}
+    good: dict[str, str] = {}
+    for name, value in raw.items():
+        if isinstance(name, str) and isinstance(value, str):
+            good[name] = value
+        else:
+            problems.append(f"{where}: запись «{name}» — не строка. Пропущена.")
+    return good
+
+
+def _text_list(raw, where: str, key: str, problems: list[str]) -> list[str]:
+    """Список строк (`managed_folders`, `ignore`). Не список — пустой список."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        problems.append(f"{where}: {key} — не список. Раздел пропущен.")
+        return []
+    return [v for v in raw if isinstance(v, str)]
+
+
+def _text(raw, default: str, where: str, key: str, problems: list[str]) -> str:
+    """Строковая настройка с запасным значением (`fallback_category`/`_type`)."""
+    if raw is None:
+        return default
+    if not isinstance(raw, str) or not raw:
+        problems.append(f"{where}: {key} — не строка. Взято «{default}».")
+        return default
+    return raw
+
+
 @dataclass
 class Config:
     downloads_path: str
@@ -138,24 +204,37 @@ class Config:
 
         rules_path = path.with_name(RULES_FILENAME)
         rules = _read_json(rules_path, problems) if rules_path.exists() else None
+        # Правила лежат в самом config.json — старая установка. Тогда они и есть
+        # незнакомые ключи: выбросить их при сохранении значит стереть
+        # единственную копию, взять её обратно неоткуда.
+        inline_rules = rules is None
         if rules is None:
             rules = data
 
-        overrides = _read_json(path.with_name(OVERRIDES_FILENAME), problems) or {}
+        rules_name = path.name if inline_rules else RULES_FILENAME
+        overrides_name = path.with_name(OVERRIDES_FILENAME).name
+        skip = USER_KEYS if inline_rules else RULE_KEYS + USER_KEYS
 
         return cls(
             downloads_path=downloads,
-            categories=rules.get("categories", {}),
-            patterns=rules.get("patterns", {}),
-            category_hints=rules.get("category_hints", {}),
-            type_map=rules.get("type_map", {}),
-            managed_folders=rules.get("managed_folders", []),
-            ignore=rules.get("ignore", []),
-            overrides=overrides,
+            categories=_rule_map(rules.get("categories"), rules_name, "categories", problems),
+            patterns=_rule_map(rules.get("patterns"), rules_name, "patterns", problems),
+            category_hints=_text_map(
+                rules.get("category_hints"), rules_name, "category_hints", problems),
+            type_map=_rule_map(rules.get("type_map"), rules_name, "type_map", problems),
+            managed_folders=_text_list(
+                rules.get("managed_folders"), rules_name, "managed_folders", problems),
+            ignore=_text_list(rules.get("ignore"), rules_name, "ignore", problems),
+            overrides=_text_map(
+                _read_json(path.with_name(OVERRIDES_FILENAME), problems),
+                overrides_name, "правила", problems),
             external_3d=_clean_3d(data.get("external_3d"), problems),
-            fallback_category=rules.get("fallback_category", "Others"),
-            fallback_type=rules.get("fallback_type", "Misc"),
-            extra={k: v for k, v in data.items() if k not in RULE_KEYS + USER_KEYS},
+            fallback_category=_text(
+                rules.get("fallback_category"), "Others",
+                rules_name, "fallback_category", problems),
+            fallback_type=_text(
+                rules.get("fallback_type"), "Misc", rules_name, "fallback_type", problems),
+            extra={k: v for k, v in data.items() if k not in skip},
             problems=problems,
         )
 

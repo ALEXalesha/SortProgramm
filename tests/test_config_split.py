@@ -56,6 +56,24 @@ def test_old_config_without_rules_json_still_works(tmp_path):
     assert cfg.managed_folders == RULES["managed_folders"]
 
 
+def test_save_keeps_rules_that_live_in_old_config(tmp_path):
+    """Старая установка: `rules.json` рядом нет, правила лежат в `config.json`.
+
+    Сохранение выкидывало ключи правил как «не настройки», а взять их обратно
+    неоткуда: файла с правилами ещё не существует. Первое же закрытие окна
+    оставляло программу без единой категории — всё в `Others` навсегда.
+    """
+    cfg_path = write(tmp_path / "config.json", {**USER, **RULES})
+    cfg = Config.load(cfg_path)
+
+    cfg.save(cfg_path)
+
+    reloaded = Config.load(cfg_path)
+    assert reloaded.categories == RULES["categories"]
+    assert reloaded.managed_folders == RULES["managed_folders"]
+    assert reloaded.fallback_category == "Разное"
+
+
 def test_save_writes_only_user_settings(tmp_path):
     cfg_path = write(tmp_path / "config.json", USER)
     write(tmp_path / "rules.json", RULES)

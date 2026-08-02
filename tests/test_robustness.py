@@ -77,6 +77,78 @@ def test_external_3d_path_not_a_string_does_not_crash(tmp_path):
     assert build_plan(cfg, send_3d_external=True) == []
 
 
+# --- правка руками: не тот тип внутри файла ---
+
+
+def test_override_category_not_a_string_does_not_crash(tmp_path):
+    """`"отчёт.pdf": 3` вместо категории роняло построение плана целиком.
+
+    Правила в `overrides.json` README предлагает писать руками, а значение
+    оттуда уходит прямо в `Path()`. Число, список, пропущенная кавычка — и
+    вместо плана трассировка, причём и в окне, и в CLI.
+    """
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "отчёт.pdf").write_text("x", encoding="utf-8")
+    cfg_path = write(tmp_path / "config.json",
+                     json.dumps({"downloads_path": str(downloads)}))
+    write(tmp_path / "rules.json", json.dumps(RULES))
+    write(tmp_path / "overrides.json", json.dumps({"отчёт.pdf": 3}))
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.overrides == {}, "правило с нестроковой категорией надо выбросить"
+    assert any("overrides.json" in p for p in cfg.problems)
+    assert build_plan(cfg)
+
+
+def test_rule_section_of_wrong_type_does_not_crash(tmp_path):
+    """`categories` списком вместо словаря — AttributeError на первом же файле."""
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "клип.mp4").write_text("x", encoding="utf-8")
+    cfg_path = write(tmp_path / "config.json",
+                     json.dumps({"downloads_path": str(downloads)}))
+    write(tmp_path / "rules.json", json.dumps({"categories": ["Медиа"]}))
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.categories == {}
+    assert any("categories" in p for p in cfg.problems)
+    assert build_plan(cfg)
+
+
+def test_keywords_written_as_string_do_not_match_every_letter(tmp_path):
+    """`"Медиа": "клип"` вместо списка — это перебор букв, а не слово.
+
+    Программа не падала, было хуже: каждая буква работала как ключевое слово,
+    и в «Медиа» уезжало всё подряд. Молчаливая неверная раскладка страшнее
+    ошибки — её замечают, когда файлы уже разложены.
+    """
+    cfg_path = write(tmp_path / "config.json", json.dumps(USER))
+    write(tmp_path / "rules.json", json.dumps({"categories": {"Медиа": "клип"}}))
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.categories == {}
+    assert any("Медиа" in p for p in cfg.problems)
+
+
+def test_fallback_category_not_a_string_falls_back_to_others(tmp_path):
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "файл.xyz").write_text("x", encoding="utf-8")
+    cfg_path = write(tmp_path / "config.json",
+                     json.dumps({"downloads_path": str(downloads)}))
+    write(tmp_path / "rules.json", json.dumps({"fallback_category": 5}))
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.fallback_category == "Others"
+    assert cfg.problems
+    assert build_plan(cfg)
+
+
 # --- внешняя папка 3D указывает на саму папку загрузок ---
 
 

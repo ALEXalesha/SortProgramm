@@ -73,6 +73,27 @@ def test_undo_does_not_clobber_existing_file(tmp_path):
     assert (tmp_path / "отчёт (1).pdf").read_text(encoding="utf-8") == "перемещённый"
 
 
+def test_undo_numbers_returned_file_before_its_extension(tmp_path):
+    """Номер надо ставить по природе того, что возвращаем, а не того, что мешает.
+
+    На исходном пути оказалась папка `клип.mp4` — и видео вернулось под именем
+    `клип.mp4 (1)`: расширение больше не последнее, файл перестал открываться
+    двойным щелчком. При перемещении этот случай уже разобран (`as_dir`), а
+    откат по-прежнему смотрел на занявшего место.
+    """
+    moved = touch(tmp_path / "куда" / "клип.mp4", "видео")
+    (tmp_path / "клип.mp4").mkdir()  # исходный путь занят папкой
+    log = tmp_path / "undo.json"
+    log.write_text(
+        json.dumps([{"src": str(tmp_path / "клип.mp4"), "dst": str(moved)}]),
+        encoding="utf-8")
+
+    undo(log)
+
+    assert (tmp_path / "клип (1).mp4").read_text(encoding="utf-8") == "видео"
+    assert (tmp_path / "клип.mp4").is_dir()
+
+
 # --- ручные подпапки внутри папок программы ---
 
 

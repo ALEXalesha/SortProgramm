@@ -40,6 +40,23 @@ def test_cli_reports_broken_settings(tmp_path, monkeypatch, capsys):
     assert "не читается" in out
 
 
+def test_cli_says_when_folder_is_missing(tmp_path, monkeypatch, capsys):
+    """Опечатка в `--path` выглядела как «загрузки уже разобраны».
+
+    Окно на несуществующей папке пишет «Папка не найдена», а CLI печатал
+    «Найдено к перемещению: 0» — тот же самый ответ, что и на прибранной
+    папке. Отличить одно от другого было нельзя.
+    """
+    cfg_path = write_config(tmp_path, {"downloads_path": str(tmp_path)})
+    monkeypatch.setattr(main, "CONFIG_PATH", cfg_path)
+
+    main.run_cli(str(tmp_path / "нет такой"), do_apply=False, to_3d=None, deep=False)
+
+    out = capsys.readouterr().out
+    assert "не найдена" in out
+    assert "Найдено к перемещению" not in out
+
+
 def test_cli_uses_saved_3d_setting(tmp_path, monkeypatch, capsys):
     """Галочку «3D → отдельная папка» окно хранит в config.json.
 

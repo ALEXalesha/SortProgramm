@@ -167,7 +167,11 @@ def undo(undo_log: Path | str) -> list[tuple[str, str]]:
             continue
         target = src
         if src.exists():
-            target = _free_name(src)
+            # Номер ставим по природе того, что возвращаем, а не того, что
+            # заняло место: иначе видео, упёршееся в папку `клип.mp4`, вернётся
+            # как `клип.mp4 (1)` — расширение перестало быть последним, и файл
+            # больше не открывается двойным щелчком.
+            target = _free_name(src, as_dir=dst.is_dir())
             notes.append((str(src), f"путь занят, вернули как «{target.name}»"))
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
