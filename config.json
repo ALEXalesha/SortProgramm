@@ -63,6 +63,8 @@
       "gemma",
       "flux",
       "openclaw",
+      "deepseek",
+      "workflow",
       ".gguf",
       ".ggml",
       ".safetensors",
@@ -87,6 +89,7 @@
       "anaconda",
       "node",
       "git-",
+      "gitpush",
       "rustup",
       "vscode",
       "vs-code",
@@ -94,9 +97,45 @@
       "cuda",
       "kumir",
       "jupyter",
+      "jdk",
+      "openjdk",
+      "autohotkey",
+      "claude",
       ".py",
       ".jsx",
       ".nsi"
+    ],
+    "Электроника": [
+      "arduino",
+      "esp8266",
+      "esp32",
+      "esp-idf",
+      "espy",
+      "esptool",
+      "micropython",
+      "platformio",
+      "ch340",
+      "ch341",
+      "ftdi",
+      "cp210",
+      "kicad",
+      "easyeda",
+      "fritzing",
+      "raspberry",
+      "rp2040",
+      "stm32",
+      "avrdude",
+      "mikrotik",
+      "winbox",
+      "паяль",
+      "распиновк",
+      "датчик",
+      "микроконтроллер",
+      "прошивк",
+      "firmware",
+      ".ino",
+      ".hex",
+      ".uf2"
     ],
     "3D": [
       "blender",
@@ -118,6 +157,8 @@
       "pla0",
       "_pla",
       "3d viewer",
+      "рендер",
+      "render",
       ".obj",
       ".gcode",
       ".3mf"
@@ -141,7 +182,19 @@
       "minecraft",
       "nether",
       "pvp",
-      "solas shader"
+      "solas shader",
+      "bepinex",
+      "among us",
+      "amongus",
+      "malummenu",
+      "resourcepack",
+      "resource pack",
+      "optifine",
+      "shader",
+      "exloader",
+      "assetto",
+      "csgo",
+      ".dem"
     ],
     "Дизайн": [
       "figma",
@@ -154,6 +207,8 @@
       "font",
       "nerd-font",
       "шрифт",
+      "macos-cursors",
+      "иконк",
       ".fig"
     ],
     "Программы": [
@@ -176,7 +231,6 @@
       "zoom",
       "teams",
       "everything",
-      "winbox",
       "zapret",
       "capcut",
       "imazing",
@@ -184,8 +238,78 @@
       "windirstat",
       "driver",
       "benchmark",
-      "aida"
+      "aida",
+      "nvidia",
+      "dch-whql",
+      "7z",
+      "imagemagick",
+      "paint.net",
+      "nirsoft",
+      "recentfilesview",
+      "shellbag",
+      "blurmica",
+      "zamzar"
+    ],
+    "Медиа": [
+      "pesni.fm",
+      "премьера",
+      "клип",
+      "музык",
+      "music",
+      "трек",
+      "альбом",
+      "album",
+      "soundtrack",
+      "рингтон",
+      "podcast",
+      "подкаст",
+      "yt-dlp",
+      "youtube",
+      "rutube",
+      "серия",
+      "сезон",
+      "season",
+      "episode",
+      "s01e",
+      "1080p",
+      "720p",
+      "bluray",
+      "webrip",
+      "hdrip",
+      "фильм",
+      "трейлер",
+      "trailer"
+    ],
+    "Скриншоты": [
+      "снимок экрана",
+      "снимок_экрана",
+      "screenshot",
+      "screen shot",
+      "скрин"
     ]
+  },
+  "patterns": {
+    "3D": [
+      "^\\d{4}-\\d{4}(\\s*\\(\\d+\\))?\\.(mp4|mkv|avi|webm|mov|png|jpg|jpeg|exr)$"
+    ],
+    "Скриншоты": [
+      "^photo_\\d{4}-\\d{2}-\\d{2}",
+      "^image\\d{14}",
+      "^(снимок экрана|screenshot)"
+    ]
+  },
+  "category_hints": {
+    "Учёба": "школа, уроки, олимпиады, рефераты, экзамены, конспекты",
+    "Нейросети": "модели и инструменты ИИ: веса, ComfyUI, LM Studio, воркфлоу",
+    "Код": "программирование: SDK, интерпретаторы, IDE, репозитории, исходники",
+    "Электроника": "микроконтроллеры и железо: Arduino, ESP, драйверы плат, прошивки, сетевое оборудование",
+    "3D": "3D-моделирование и печать: Blender, слайсеры, модели, рендеры анимации",
+    "Игры": "игры, лаунчеры, моды, читы, ресурс-паки, сохранения, записи матчей",
+    "Дизайн": "графика и оформление: Figma, шрифты, курсоры, исходники макетов",
+    "Программы": "обычный софт для Windows: установщики, утилиты, драйверы, браузеры",
+    "Медиа": "музыка, фильмы, сериалы, клипы, подкасты — то, что смотрят и слушают",
+    "Скриншоты": "снимки экрана и пересланные фото с датой в имени",
+    "Others": "не подошло ни к чему — запасная категория"
   },
   "type_map": {
     "Models": [
@@ -274,6 +398,12 @@
       "psd",
       "ai",
       "xd"
+    ],
+    "Firmware": [
+      "ino",
+      "hex",
+      "uf2",
+      "elf"
     ]
   },
   "managed_folders": [
@@ -281,8 +411,11 @@
     "Игры",
     "3D",
     "Код",
+    "Электроника",
     "Дизайн",
     "Программы",
+    "Медиа",
+    "Скриншоты",
     "Others",
     "Documents",
     "Images",
@@ -292,10 +425,19 @@
     "Installers",
     "Code",
     "Design",
+    "Firmware",
     "Misc",
     "Нейросети",
     "Models"
   ],
+  "protected_folders": [
+    "Telegram Desktop",
+    "Downloads",
+    "Загрузки",
+    "temp",
+    "tmp"
+  ],
+  "folder_bucket": "_Папки",
   "ignore": [
     "*.crdownload",
     "*.part",

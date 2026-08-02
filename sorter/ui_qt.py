@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 
 from .config import Config
 from .scanner import scan
+from .folders import scan_folders
 from .planner import build_plan, Move
 from .mover import apply
 from .util import rel_to
@@ -24,19 +25,32 @@ from . import history
 
 
 class _AiWorker(QThread):
-    """Фоновый запрос к DeepSeek, чтобы окно не зависало."""
+    """Фоновый запрос к DeepSeek, чтобы окно не зависало.
+
+    Длинный список уходит пачками (`ai.classify_many`), поэтому по дороге
+    прилетает прогресс — иначе на сотне имён окно молчит полминуты и кажется
+    зависшим.
+    """
     done = pyqtSignal(dict)
     failed = pyqtSignal(str)
+    progress = pyqtSignal(int, int)
 
-    def __init__(self, filenames, categories, api_key):
+    def __init__(self, filenames, categories, api_key, hints=None):
         super().__init__()
         self._filenames = filenames
         self._categories = categories
         self._api_key = api_key
+        self._hints = hints or {}
 
     def run(self):
         try:
-            result = ai.classify_with_ai(self._filenames, self._categories, self._api_key)
+            result = ai.classify_many(
+                self._filenames,
+                self._categories,
+                self._api_key,
+                on_progress=lambda done, total: self.progress.emit(done, total),
+                hints=self._hints,
+            )
             self.done.emit(result)
         except Exception as exc:  # сеть, ключ, разбор — наружу как текст
             self.failed.emit(str(exc))
@@ -316,6 +330,14 @@ class GlassWindow(QWidget):
         row = QHBoxLayout()
         self.move_enabled = QCheckBox("Перемещать файлы")
         row.addWidget(self.move_enabled)
+        self.with_folders = QCheckBox("И целые папки")
+        self.with_folders.setToolTip(
+            "Раскладывать и папки из корня загрузок целиком:\n"
+            "Категория/_Папки/имя. Папка едет одним куском —\n"
+            "мир Minecraft или репозиторий не разбираются по файлам."
+        )
+        self.with_folders.stateChanged.connect(lambda _: self.preview())
+        row.addWidget(self.with_folders)
         row.addStretch(1)
         self.status = QLabel("Нажми «Очистить», чтобы построить план.", objectName="status")
         row.addWidget(self.status)
@@ -419,12 +441,19 @@ class GlassWindow(QWidget):
             self.status.setText("Папка не найдена — укажи существующий путь.")
             return
         self.moves = build_plan(
-            self.config, send_3d_external=self.to_3d.isChecked(), deep=deep)
+            self.config,
+            send_3d_external=self.to_3d.isChecked(),
+            deep=deep,
+            include_folders=self.with_folders.isChecked(),
+        )
         self.table.setRowCount(len(self.moves))
         for r, mv in enumerate(self.moves):
             self.table.setItem(r, 0, QTableWidgetItem(rel_to(mv.src, root)))
-            self.table.setItem(r, 1, QTableWidgetItem(rel_to(mv.dst, root)))
-        self.status.setText(f"План готов: {len(self.moves)} файлов.")
+            target = rel_to(mv.dst, root)
+            if mv.note:
+                target = f"{target}   ({mv.note})"
+            self.table.setItem(r, 1, QTableWidgetItem(target))
+        self.status.setText(f"План готов: {len(self.moves)} шт.")
 
     def _save_overrides(self):
         path = self.config_path.with_name("overrides.json")
@@ -449,26 +478,39 @@ class GlassWindow(QWidget):
                 "или задай переменную окружения DEEPSEEK_API_KEY.")
             return
         files = scan(self.config.downloads_path, self.config, deep=True)
-        if not files:
-            self.status.setText("Файлов не найдено.")
-            return
         names = [f.name for f in files]
+        # Папки уходят к ИИ с косой чертой на конце — так модель понимает, что
+        # это не файл без расширения, и оценивает содержимое целиком.
+        if self.with_folders.isChecked():
+            names += [f"{d.name}/" for d in scan_folders(self.config.downloads_path, self.config)]
+        if not names:
+            self.status.setText("Нечего разбирать.")
+            return
         cats = list(self.config.categories.keys()) + [self.config.fallback_category]
         self.ai_btn.setEnabled(False)
-        self.status.setText(f"Спрашиваю DeepSeek по {len(names)} файлам…")
-        self._worker = _AiWorker(names, cats, key)
+        self.status.setText(f"Спрашиваю DeepSeek по {len(names)} именам…")
+        self._worker = _AiWorker(names, cats, key, self.config.category_hints)
         self._worker.done.connect(self._ai_done)
         self._worker.failed.connect(self._ai_failed)
+        self._worker.progress.connect(self._ai_progress)
         self._worker.start()
+
+    def _ai_progress(self, done, total):
+        self.status.setText(f"DeepSeek: пачка {done} из {total}…")
 
     def _ai_done(self, mapping):
         self.ai_btn.setEnabled(True)
         if not mapping:
             self.status.setText("ИИ не вернул результатов.")
             return
-        self.config.overrides.update(mapping)
+        # «Others» от модели — это «не знаю», а не решение. Правилом не пишем:
+        # оно встало бы выше ключевых слов и закрыло файлу дорогу навсегда.
+        rules = ai.useful_rules(mapping, self.config.fallback_category)
+        self.config.overrides.update(rules)
         self._save_overrides()
-        self.status.setText(f"ИИ разложил {len(mapping)} файлов.")
+        skipped = len(mapping) - len(rules)
+        tail = f" (без решения: {skipped})" if skipped else ""
+        self.status.setText(f"ИИ разложил {len(rules)} шт.{tail}")
         self.preview(deep=True)
 
     def _ai_failed(self, err):

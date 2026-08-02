@@ -23,18 +23,21 @@ else:
 CONFIG_PATH = BASE_DIR / "config.json"
 
 
-def run_cli(path: str | None, do_apply: bool, to_3d: bool) -> None:
+def run_cli(path: str | None, do_apply: bool, to_3d: bool, with_folders: bool) -> None:
     config = Config.load(CONFIG_PATH)
     if path:
         config.downloads_path = path
     # CLI — режим без ИИ: только корень загрузок (deep=False) + разбор All_3d.
-    moves = build_plan(config, send_3d_external=to_3d, deep=False)
+    moves = build_plan(
+        config, send_3d_external=to_3d, deep=False, include_folders=with_folders
+    )
 
     print(f"Папка: {config.downloads_path}")
     print(f"Найдено к перемещению: {len(moves)}\n")
     root = Path(config.downloads_path)
     for mv in moves:
-        print(f"  {rel_to(mv.src, root)}  ->  {rel_to(mv.dst, root)}")
+        reason = f"   [{mv.note}]" if mv.note else ""
+        print(f"  {rel_to(mv.src, root)}  ->  {rel_to(mv.dst, root)}{reason}")
 
     if do_apply:
         result = apply(moves, config, dry_run=False)
@@ -54,11 +57,13 @@ def main() -> None:
     parser.add_argument("--cli", action="store_true", help="режим командной строки без окна")
     parser.add_argument("--to3d", action="store_true",
                         help="файлы 3D-моделей (3mf/obj/stl/gcode) -> внешняя папка All_3d")
+    parser.add_argument("--folders", action="store_true",
+                        help="раскладывать и целые папки из корня загрузок (Категория/_Папки/имя)")
     parser.add_argument("--tk", action="store_true", help="старый интерфейс Tkinter")
     args = parser.parse_args()
 
     if args.cli or args.path:
-        run_cli(args.path, args.apply, args.to3d)
+        run_cli(args.path, args.apply, args.to3d, args.folders)
     elif args.tk:
         from sorter.ui import launch
         launch(CONFIG_PATH)

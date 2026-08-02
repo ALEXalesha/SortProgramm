@@ -73,6 +73,12 @@ class SorterApp:
             variable=self.to_3d, command=self.preview,
         ).pack(side="left", padx=12)
 
+        self.with_folders = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            bottom, text="И целые папки",
+            variable=self.with_folders, command=self.preview,
+        ).pack(side="left")
+
         self.apply_btn = ttk.Button(bottom, text="Применить", command=self.do_apply)
         self.apply_btn.pack(side="right")
 
@@ -94,15 +100,19 @@ class SorterApp:
     def preview(self):
         # Без ИИ: только корень загрузок (deep=False) + авторазбор All_3d по расширениям.
         self.moves = build_plan(
-            self.config, send_3d_external=self.to_3d.get(), deep=False)
+            self.config,
+            send_3d_external=self.to_3d.get(),
+            deep=False,
+            include_folders=self.with_folders.get(),
+        )
         self.tree.delete(*self.tree.get_children())
         root = Path(self.config.downloads_path)
         for mv in self.moves:
-            self.tree.insert("", "end", values=(
-                _rel_to(mv.src, root),
-                _rel_to(mv.dst, root),
-            ))
-        self.status.set(f"План готов: {len(self.moves)} файлов к перемещению.")
+            dest = _rel_to(mv.dst, root)
+            if mv.note:
+                dest = f"{dest}   ({mv.note})"
+            self.tree.insert("", "end", values=(_rel_to(mv.src, root), dest))
+        self.status.set(f"План готов: {len(self.moves)} шт. к перемещению.")
 
     def do_apply(self):
         if not self.moves:

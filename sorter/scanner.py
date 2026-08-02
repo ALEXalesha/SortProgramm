@@ -39,8 +39,28 @@ def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
 
 
 def _walk_managed(folder: Path, config: Config) -> list[Path]:
+    """Файлы внутри управляемой папки, кроме корзины целых папок.
+
+    В `folder_bucket` (`_Папки`) лежат перенесённые целиком папки: мир Minecraft,
+    git-репозиторий, мод. Если войти туда и разложить их содержимое по типам,
+    папка перестанет существовать как единица — `level.dat` уедет в Misc,
+    исходники в Code, и восстановить это можно будет только вручную.
+
+    Поэтому обход ручной, со стеком: `rglob` не умеет отсекать поддеревья.
+    """
+    bucket = config.folder_bucket
     files: list[Path] = []
-    for entry in sorted(folder.rglob("*")):
-        if entry.is_file() and not _is_ignored(entry.name, config.ignore):
-            files.append(entry)
-    return files
+    stack = [folder]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_dir():
+                if entry.name != bucket:
+                    stack.append(entry)
+            elif not _is_ignored(entry.name, config.ignore):
+                files.append(entry)
+    return sorted(files)

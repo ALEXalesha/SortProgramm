@@ -14,23 +14,67 @@ DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_BASE_URL = "https://api.deepseek.com/chat/completions"
 KEY_FILENAME = "deepseek_key.txt"
 
+# Сколько имён кладём в один запрос. На длинных списках модель начинает
+# «экономить»: отвечает не про все файлы или срезает ответ на середине. Сорок
+# имён — размер, на котором ответ стабильно полный, а запросов всё ещё немного.
+BATCH_SIZE = 40
 
-def build_messages(filenames: list[str], categories: list[str]) -> list[dict]:
-    """Системное + пользовательское сообщения для модели."""
-    cats = ", ".join(categories)
+# Примеры делают больше, чем любые объяснения: показывают формат ответа и разбор
+# ровно тех случаев, где модель ошибается сама. Первые два — из реальной папки
+# загрузок: рендер Blender по диапазону кадров и мир Minecraft без опознавательного
+# имени. Третий закрывает частую ошибку — шрифт Lora не имеет отношения к LoRA.
+EXAMPLE_INPUT = "0001-0250.mp4\nfluga/\nLora-Regular.ttf\ncuda_13.2.1_windows.exe"
+EXAMPLE_OUTPUT = (
+    '{"0001-0250.mp4": "3D", "fluga/": "Игры", '
+    '"Lora-Regular.ttf": "Дизайн", "cuda_13.2.1_windows.exe": "Код"}'
+)
+
+
+def build_messages(
+    filenames: list[str],
+    categories: list[str],
+    hints: dict[str, str] | None = None,
+) -> list[dict]:
+    """Системное + пользовательское сообщения для модели.
+
+    hints — короткое описание каждой категории из config. Без них модель судит
+    по одному лишь названию папки и стабильно путает соседей: «Программы» против
+    «Код», «Дизайн» против «3D». Описание снимает этот спор.
+
+    Имена папок приходят с косой чертой на конце — папку надо оценивать целиком,
+    а не по расширению, которого у неё нет.
+    """
+    hints = hints or {}
+    lines = [
+        f"- {name}: {hints[name]}" if name in hints else f"- {name}"
+        for name in categories
+    ]
     system = (
-        "Ты сортируешь файлы из папки загрузок по категориям. "
-        "Доступные категории: " + cats + ". "
-        "Определи категорию по имени файла (язык, расширение, смысл). "
-        "Если не подходит ни одна — используй Others. "
-        "Ответь СТРОГО одним JSON-объектом вида {\"имя файла\": \"Категория\"} "
-        "для всех присланных файлов, без пояснений."
+        "Ты раскладываешь содержимое папки «Загрузки» по категориям.\n\n"
+        "Категории:\n" + "\n".join(lines) + "\n\n"
+        "Правила:\n"
+        "1. Решай по смыслу имени: язык, расширение, версия, узнаваемый продукт.\n"
+        "2. Имя, оканчивающееся на «/», — это папка. Оценивай её как единое целое.\n"
+        "3. Ключ в ответе повторяй ровно как прислали, символ в символ, включая «/».\n"
+        "4. Отвечай про все присланные имена и только про них. Ничего не выдумывай.\n"
+        "5. Не уверен — ставь Others. Это лучше, чем угадать мимо.\n\n"
+        "Формат ответа — один JSON-объект {\"имя\": \"Категория\"}, без пояснений.\n\n"
+        "Пример\n"
+        "Ввод:\n" + EXAMPLE_INPUT + "\n"
+        "Ответ:\n" + EXAMPLE_OUTPUT
     )
-    user = "Файлы:\n" + "\n".join(filenames)
+    user = "Имена:\n" + "\n".join(filenames)
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
+
+
+def batched(items: list[str], size: int = BATCH_SIZE) -> list[list[str]]:
+    """Режет список на куски по size. Пустой список — ноль кусков."""
+    if size < 1:
+        raise ValueError("размер пачки должен быть положительным")
+    return [items[i:i + size] for i in range(0, len(items), size)]
 
 
 def _extract_json(content: str) -> str:
@@ -43,7 +87,12 @@ def _extract_json(content: str) -> str:
 
 
 def parse_ai_response(content: str, valid_categories: list[str]) -> dict[str, str]:
-    """Разбор ответа модели в мапу имя->категория. Неизвестная категория -> Others."""
+    """Разбор ответа модели в мапу имя->категория. Неизвестная категория -> Others.
+
+    Косую черту с конца имени убираем: в запрос она уходит как пометка «это
+    папка», а в overrides.json ключом должно быть чистое имя — иначе правило
+    никогда не совпадёт с реальной папкой.
+    """
     raw = _extract_json(content)
     if not raw:
         return {}
@@ -58,7 +107,10 @@ def parse_ai_response(content: str, valid_categories: list[str]) -> dict[str, st
     for name, cat in data.items():
         if not isinstance(name, str) or not isinstance(cat, str):
             continue
-        result[name] = cat if cat in valid else "Others"
+        key = name.rstrip("/")
+        if not key:
+            continue
+        result[key] = cat if cat in valid else "Others"
     return result
 
 
@@ -82,11 +134,15 @@ def classify_with_ai(
     model: str = DEFAULT_MODEL,
     base_url: str = DEFAULT_BASE_URL,
     timeout: int = 60,
+    hints: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Запрос к DeepSeek. Возвращает мапу имя->категория (через parse_ai_response)."""
+    """Один запрос к DeepSeek. Мапа имя->категория (через parse_ai_response).
+
+    Для длинных списков используй classify_many — она режет их на пачки.
+    """
     payload = {
         "model": model,
-        "messages": build_messages(filenames, categories),
+        "messages": build_messages(filenames, categories, hints),
         "response_format": {"type": "json_object"},
         "temperature": 0,
     }
@@ -103,3 +159,48 @@ def classify_with_ai(
         body = json.loads(resp.read().decode("utf-8"))
     content = body["choices"][0]["message"]["content"]
     return parse_ai_response(content, categories)
+
+
+def useful_rules(mapping: dict[str, str], fallback: str = "Others") -> dict[str, str]:
+    """Отбрасывает правила «в запасную категорию».
+
+    Когда модель отвечает Others, она говорит «не знаю». Записать это правилом —
+    значит заморозить незнание: правила стоят выше ключевых слов, поэтому такой
+    файл больше никогда не попадёт в новую категорию, сколько её ни улучшай.
+    Без правила файл и так уедет в Others — но уже по текущим правилам, а не по
+    прошлогоднему «не знаю».
+
+    Правила, поставленные руками, это не трогает: фильтр применяется только к
+    ответу ИИ перед сохранением.
+    """
+    return {name: cat for name, cat in mapping.items() if cat != fallback}
+
+
+def classify_many(
+    filenames: list[str],
+    categories: list[str],
+    api_key: str,
+    batch_size: int = BATCH_SIZE,
+    on_progress=None,
+    classifier=classify_with_ai,
+    **kwargs,
+) -> dict[str, str]:
+    """Классификация длинного списка пачками. Возвращает объединённую мапу.
+
+    Упавшая пачка не топит остальные: её имена просто останутся без правила и
+    поедут по обычным ключевым словам. Половина разложенных загрузок лучше, чем
+    ошибка на весь список из-за одного таймаута.
+
+    on_progress(готово, всего) — для полоски прогресса в интерфейсе.
+    classifier подменяется в тестах, чтобы не ходить в сеть.
+    """
+    batches = batched(filenames, batch_size)
+    result: dict[str, str] = {}
+    for index, batch in enumerate(batches, start=1):
+        try:
+            result.update(classifier(batch, categories, api_key, **kwargs))
+        except Exception:
+            pass
+        if on_progress:
+            on_progress(index, len(batches))
+    return result
