@@ -28,7 +28,15 @@ def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
     if not root.is_dir():
         return found
 
-    for entry in sorted(root.iterdir()):
+    # Прочитать папку может не выйти: права, отключённый сетевой диск, вынутая
+    # флешка. Внутри управляемых папок этот случай уже обработан
+    # (`_walk_managed`), и в корне он ничем не лучше — окно падать не должно.
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        return found
+
+    for entry in entries:
         if entry.is_file():
             if not _is_ignored(entry.name, config.ignore):
                 found.append(entry)

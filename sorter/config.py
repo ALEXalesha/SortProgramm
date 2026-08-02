@@ -82,6 +82,15 @@ def _clean_3d(raw, problems: list[str]) -> dict:
     extensions = data.get("extensions")
     if not isinstance(extensions, list) or not extensions:
         data["extensions"] = list(DEFAULT_3D_EXTENSIONS)
+    # Путь уходит и в `Path()`, и в поле ввода — обоим нужна строка. Проверка
+    # самой настройки на «объект» тут не помогает: объект может быть правильный,
+    # а путь внутри — числом после съехавшей замены в редакторе. Программа тогда
+    # не открывалась вовсе, то есть починить настройку через окно уже нельзя.
+    path = data.get("path")
+    if path is not None and not isinstance(path, str):
+        problems.append(
+            "config.json: external_3d.path — не строка. Путь к папке 3D сброшен.")
+        data["path"] = ""
     return data
 
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .mover import undo as _undo
+from .mover import entries_of, undo as _undo
 
 _PREFIX = "undo_"
 _SUFFIX = ".json"
@@ -68,13 +68,13 @@ def list_operations(downloads_path: str | Path) -> list[Operation]:
         if stamp is None:
             continue
         try:
-            entries = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if not isinstance(entries, list):
+        if not isinstance(raw, list):
             continue
         when, serial = stamp
-        ops.append(Operation(path, when, entries, serial))
+        ops.append(Operation(path, when, entries_of(raw), serial))
 
     ops.sort(key=lambda op: (op.when, op.serial), reverse=True)
     return ops
@@ -87,10 +87,24 @@ def undo_operation(op: Operation) -> list[tuple[str, str]]:
     оказался занят. Список пустой, если всё легло на свои места. Показать его
     обязательно: молчаливый «успешный» откат, после которого данные лежат под
     другим именем, — худший из возможных исходов.
+
+    Журнал удаляется, только когда возвращать больше нечего. Файл держит другая
+    программа, исходной папки не стало, диск сняли — такой файл остаётся лежать
+    не там, где был, и попытку надо будет повторить. Раньше журнал исчезал в
+    любом случае, а вместе с ним и сама возможность: запись пропадала из
+    истории, файл оставался на новом месте, и связать одно с другим было нечем.
+
+    Что вернулось, а что нет, спрашиваем у файловой системы: пропал файл по
+    новому пути — значит, уехал обратно.
     """
     notes = _undo(op.log_path)
+    left = [e for e in op.entries if Path(e["dst"]).exists()]
     try:
-        op.log_path.unlink()
+        if left:
+            op.log_path.write_text(
+                json.dumps(left, ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
+            op.log_path.unlink()
     except OSError:
         pass
     return notes

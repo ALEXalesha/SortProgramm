@@ -312,3 +312,77 @@ def test_override_still_matches_exact_name_with_number(tmp_path):
     cfg = make_config(tmp_path)
     cfg.overrides = {"отчёт (1).pdf": "Учёба", "отчёт.pdf": "Медиа"}
     assert explain_category("отчёт (1).pdf", "", cfg)[0] == "Учёба"
+
+
+# --- занятая цель при перемещении ---
+
+
+def test_apply_does_not_clobber_file_at_destination(tmp_path):
+    """`shutil.move` молча затирает файл, если в цели уже лежит такое имя.
+
+    План строится один раз, а применяется позже: между «Очистить» и
+    «Применить» проходит сколько угодно времени, и за это время в целевой
+    папке мог появиться файл с тем же именем — руками, второй копией
+    программы, докачкой браузера. Свободное имя planner подбирал по состоянию
+    на момент плана, и к моменту перемещения оно уже не свободно.
+
+    Снаружи это выглядело как обычная успешная сортировка: «перемещено 1,
+    ошибок 0». Файла при этом больше нет.
+    """
+    cfg = make_config(tmp_path)
+    touch(tmp_path / "клип.mp4", "новый")
+    moves = build_plan(cfg)
+    touch(tmp_path / "Медиа" / "Videos" / "клип.mp4", "старый и важный")
+
+    result = apply(moves, cfg, dry_run=False)
+
+    assert (tmp_path / "Медиа" / "Videos" / "клип.mp4").read_text(
+        encoding="utf-8") == "старый и важный", "файл в цели затёрт"
+    assert (tmp_path / "Медиа" / "Videos" / "клип (1).mp4").read_text(
+        encoding="utf-8") == "новый"
+    assert result.notes, "переименование надо показать, а не проглотить"
+
+
+def test_apply_does_not_move_file_inside_folder_with_same_name(tmp_path):
+    """Если в цели папка с таким именем, `shutil.move` кладёт файл ВНУТРЬ неё."""
+    cfg = make_config(tmp_path)
+    touch(tmp_path / "клип.mp4")
+    moves = build_plan(cfg)
+    (tmp_path / "Медиа" / "Videos" / "клип.mp4").mkdir(parents=True)
+
+    apply(moves, cfg, dry_run=False)
+
+    assert not (tmp_path / "Медиа" / "Videos" / "клип.mp4" / "клип.mp4").exists()
+    assert (tmp_path / "Медиа" / "Videos" / "клип (1).mp4").is_file()
+
+
+def test_undo_returns_file_to_place_freed_by_dedup(tmp_path):
+    """Журнал пишет то имя, под которым файл реально лёг, иначе откат промахнётся."""
+    cfg = make_config(tmp_path)
+    touch(tmp_path / "клип.mp4", "новый")
+    moves = build_plan(cfg)
+    touch(tmp_path / "Медиа" / "Videos" / "клип.mp4", "старый")
+
+    result = apply(moves, cfg, dry_run=False)
+    undo(result.undo_log)
+
+    assert (tmp_path / "клип.mp4").read_text(encoding="utf-8") == "новый"
+    assert not (tmp_path / "Медиа" / "Videos" / "клип (1).mp4").exists()
+
+
+# --- нечитаемая папка ---
+
+
+def test_scan_survives_unreadable_folder(tmp_path, monkeypatch):
+    """Права на папку могут не дать её прочитать — окно не должно падать.
+
+    Внутри управляемых папок этот случай уже обработан (`_walk_managed`),
+    а в корне тот же самый вызов шёл без защиты.
+    """
+    cfg = make_config(tmp_path)
+
+    def denied(self):
+        raise PermissionError("нет доступа")
+
+    monkeypatch.setattr(Path, "iterdir", denied)
+    assert scan(tmp_path, cfg, deep=False) == []

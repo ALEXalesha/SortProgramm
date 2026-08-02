@@ -23,10 +23,26 @@ else:
 CONFIG_PATH = BASE_DIR / "config.json"
 
 
-def run_cli(path: str | None, do_apply: bool, to_3d: bool, deep: bool) -> None:
+def run_cli(path: str | None, do_apply: bool, to_3d: bool | None, deep: bool) -> None:
     config = Config.load(CONFIG_PATH)
     if path:
         config.downloads_path = path
+
+    # Окно про испорченные настройки предупреждает окном, а CLI молчал — и
+    # раскладка «всё в Others» из-за нечитаемого rules.json выглядела как
+    # нормальный план. Сказать надо до `--apply`, а не после.
+    if config.problems:
+        print("Настройки прочитаны не полностью:")
+        for problem in config.problems:
+            print(f"  ! {problem}")
+        print()
+
+    # Без флага берём то, что стоит галочкой в окне: CLI и окно должны
+    # показывать один и тот же план на одних и тех же настройках, иначе
+    # проверка правил через консоль ничего не проверяет.
+    if to_3d is None:
+        to_3d = bool(config.external_3d.get("enabled", False))
+
     # deep=False — только корень загрузок; deep=True — переразложить и то,
     # что программа уже разложила по своим папкам. Плюс разбор All_3d.
     moves = build_plan(config, send_3d_external=to_3d, deep=deep)
@@ -43,6 +59,8 @@ def run_cli(path: str | None, do_apply: bool, to_3d: bool, deep: bool) -> None:
         print(f"\nПеремещено: {result.moved}, ошибок: {len(result.errors)}")
         for src, err in result.errors:
             print(f"  ОШИБКА {src}: {err}")
+        for src, note in result.notes:
+            print(f"  {src}: {note}")
         if result.undo_log:
             print(f"Лог отмены: {result.undo_log}")
     else:
@@ -54,8 +72,9 @@ def main() -> None:
     parser.add_argument("--path", help="папка для сортировки (по умолчанию из config.json)")
     parser.add_argument("--apply", action="store_true", help="реально перемещать файлы")
     parser.add_argument("--cli", action="store_true", help="режим командной строки без окна")
-    parser.add_argument("--to3d", action="store_true",
-                        help="файлы 3D-моделей (3mf/obj/stl/gcode) -> внешняя папка All_3d")
+    parser.add_argument("--to3d", action=argparse.BooleanOptionalAction, default=None,
+                        help="файлы 3D-моделей (3mf/obj/stl/gcode) -> внешняя папка "
+                             "All_3d (по умолчанию — как настроено в окне)")
     parser.add_argument("--deep", action="store_true",
                         help="переразложить: проверить заново и то, что уже разложено "
                              "по папкам программы (чужие папки не трогаются)")

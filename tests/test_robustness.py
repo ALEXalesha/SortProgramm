@@ -56,6 +56,27 @@ def test_healthy_config_has_no_problems(tmp_path):
     assert cfg.overrides == {"a.mp4": "Медиа"}
 
 
+def test_external_3d_path_not_a_string_does_not_crash(tmp_path):
+    """`"path": 123` вместо строки роняло планирование и окно на запуске.
+
+    Тип самой настройки `external_3d` уже проверяется, а вот путь внутри неё —
+    нет: он уходил прямо в `Path()` и в поле ввода. Правка руками, съехавшая
+    замена в редакторе — и программа не открывается вовсе.
+    """
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    cfg_path = write(tmp_path / "config.json", json.dumps({
+        "downloads_path": str(downloads),
+        "external_3d": {"enabled": True, "path": 123},
+    }))
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.external_3d["path"] == ""
+    assert any("external_3d" in p for p in cfg.problems)
+    assert build_plan(cfg, send_3d_external=True) == []
+
+
 # --- внешняя папка 3D указывает на саму папку загрузок ---
 
 

@@ -130,8 +130,13 @@ class SorterApp:
         result = apply(self.moves, self.config, dry_run=False)
         msg = f"Перемещено: {result.moved}, ошибок: {len(result.errors)}"
         self.status.set(msg)
-        if result.errors:
-            messagebox.showwarning("Готово с ошибками", msg)
+        if result.notes:
+            # Имя в цели оказалось занято, файл лёг рядом под другим — в плане
+            # было написано иначе, значит надо сказать.
+            details = "\n".join(f"• {where}: {why}" for where, why in result.notes[:10])
+            msg += f"\n\n{details}"
+        if result.errors or result.notes:
+            messagebox.showwarning("Готово с оговорками", msg)
         else:
             messagebox.showinfo("Готово", msg)
         self.preview()

@@ -116,6 +116,13 @@ QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
 """
 
 
+def _notes_text(notes: list[tuple[str, str]], limit: int = 10) -> str:
+    """Оговорки списком. Длинный хвост сворачивается — окно не резиновое."""
+    lines = "\n".join(f"• {where}: {why}" for where, why in notes[:limit])
+    tail = f"\n…и ещё {len(notes) - limit}" if len(notes) > limit else ""
+    return lines + tail
+
+
 class HistoryDialog(QDialog):
     """Список прошлых сортировок с возможностью откатить любую из них."""
 
@@ -226,11 +233,9 @@ class HistoryDialog(QDialog):
         if notes:
             # Молчать нельзя: снаружи откат выглядит успешным, а часть данных
             # лежит под другими именами — как раз то, что легко не заметить.
-            lines = "\n".join(f"• {where}: {why}" for where, why in notes[:10])
-            more = f"\n…и ещё {len(notes) - 10}" if len(notes) > 10 else ""
             QMessageBox.warning(
                 self, "Откат прошёл с оговорками",
-                f"Не всё вернулось ровно на своё место:\n\n{lines}{more}")
+                "Не всё вернулось ровно на своё место:\n\n" + _notes_text(notes))
         self._reload()
 
 
@@ -551,8 +556,13 @@ class GlassWindow(QWidget):
         self._save_settings()
         msg = f"Перемещено: {result.moved}, ошибок: {len(result.errors)}"
         self.status.setText(msg)
-        (QMessageBox.warning if result.errors else QMessageBox.information)(
-            self, "Готово", msg)
+        if result.notes:
+            # В цели уже лежало такое имя, и файл лёг рядом под другим. В плане
+            # было написано иначе — значит, надо сказать, а не молча разойтись
+            # с тем, что человек только что прочитал в таблице.
+            msg += f"\n\n{_notes_text(result.notes)}"
+        (QMessageBox.warning if result.errors or result.notes
+         else QMessageBox.information)(self, "Готово", msg)
         self.preview()
 
 

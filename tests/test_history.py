@@ -59,6 +59,46 @@ def test_ignores_broken_and_foreign_files(tmp_path):
     assert history.list_operations(tmp_path) == []
 
 
+def test_log_with_strange_entries_does_not_break_history(tmp_path):
+    """Журнал пишет программа, но лежит он в папке пользователя.
+
+    Правка руками, обрыв записи, чужой файл под таким же именем — и в списке
+    оказывается что угодно вместо пар «откуда/куда». Окно истории падало на
+    показе такой записи, а откат — на попытке её прочитать.
+    """
+    _write_log(tmp_path, "undo_20260101_000000.json",
+               ["строка", 5, {"src": "a"}, {"src": "a", "dst": "b"}])
+
+    ops = history.list_operations(tmp_path)
+
+    assert len(ops) == 1
+    assert ops[0].entries == [{"src": "a", "dst": "b"}], "мусор надо отсеять"
+    assert history.undo_operation(ops[0]) == []
+
+
+def test_undo_keeps_log_when_file_did_not_return(tmp_path):
+    """Не вернулось — значит откатить ещё предстоит, и журнал нужен.
+
+    Файл держит другая программа, исходной папки больше нет, диск снят —
+    откат сообщает об этом оговоркой. Журнал при этом удалялся всё равно, и
+    вместе с ним пропадала сама возможность повторить попытку: запись из
+    истории исчезала, а файл оставался лежать не там, где был.
+    """
+    cfg = make_config(tmp_path)
+    src = tmp_path / "занято" / "a.pdf"
+    touch(src, "data")
+    apply([Move(src, tmp_path / "Others" / "a.pdf")], cfg, dry_run=False)
+    (tmp_path / "занято").rmdir()
+    touch(tmp_path / "занято")  # под файлом папку не создать — откат не пройдёт
+
+    op = history.list_operations(tmp_path)[0]
+    notes = history.undo_operation(op)
+
+    assert notes, "неудачу надо показать"
+    assert (tmp_path / "Others" / "a.pdf").exists(), "файл никуда не вернулся"
+    assert len(history.list_operations(tmp_path)) == 1, "журнал удалён — откат не повторить"
+
+
 def test_undo_operation_restores_and_removes_log(tmp_path):
     cfg = make_config(tmp_path)
     src = tmp_path / "a.pdf"

@@ -17,6 +17,8 @@ class Result:
     moved: int = 0
     skipped: int = 0
     errors: list[tuple[str, str]] = field(default_factory=list)
+    # Оговорки: файл переехал, но не совсем так, как обещал план.
+    notes: list[tuple[str, str]] = field(default_factory=list)
     undo_log: Path | None = None
 
 
@@ -31,8 +33,18 @@ def apply(moves: list[Move], config: Config, dry_run: bool = True) -> Result:
             if not mv.src.exists():
                 raise FileNotFoundError(f"нет файла: {mv.src}")
             mv.dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(mv.src), str(mv.dst))
-            performed.append({"src": str(mv.src), "dst": str(mv.dst)})
+            # Свободное имя planner подбирал по состоянию на момент плана, а
+            # между «Очистить» и «Применить» проходит сколько угодно времени.
+            # Занятую за это время цель `shutil.move` затирает молча (файл) или
+            # вкладывает в неё (папка) — и то и другое снаружи выглядит как
+            # успешная сортировка. Проверяем ещё раз, прямо перед перемещением.
+            dst = _free_name(mv.dst, as_dir=mv.src.is_dir())
+            if dst != mv.dst:
+                result.notes.append((
+                    str(mv.src),
+                    f"в цели уже есть «{mv.dst.name}», положили как «{dst.name}»"))
+            shutil.move(str(mv.src), str(dst))
+            performed.append({"src": str(mv.src), "dst": str(dst)})
             result.moved += 1
         except OSError as exc:
             result.errors.append((str(mv.src), str(exc)))
@@ -92,22 +104,50 @@ def _cleanup_emptied(performed: list[dict[str, str]], config: Config) -> None:
             folder = folder.parent
 
 
-def _free_name(path: Path) -> Path:
+def _free_name(path: Path, as_dir: bool | None = None) -> Path:
     """Свободное имя рядом с занятым: ` (1)`, ` (2)`…
 
     У папки расширения нет, но точки в имени бывают
     (`zapret-discord-youtube-1.9.2`), поэтому номер к ней приписывается
     к имени целиком, а не перед последней точкой.
+
+    `as_dir` — папку ли мы кладём. По умолчанию смотрим на то, что уже лежит
+    по этому пути, и обычно этого хватает: занимает место обычно такой же
+    объект. Но файл может упереться и в папку с тем же именем — тогда номер
+    надо ставить по природе того, что кладём (`клип (1).mp4`), а не того, что
+    мешает (`клип.mp4 (1)`).
     """
     if not path.exists():
         return path
-    stem, suffix = (path.name, "") if path.is_dir() else (path.stem, path.suffix)
+    if as_dir is None:
+        as_dir = path.is_dir()
+    stem, suffix = (path.name, "") if as_dir else (path.stem, path.suffix)
     i = 1
     while True:
         candidate = path.with_name(f"{stem} ({i}){suffix}")
         if not candidate.exists():
             return candidate
         i += 1
+
+
+def entries_of(raw) -> list[dict[str, str]]:
+    """Оставляет из журнала только пары «откуда/куда».
+
+    Журнал пишет программа, но лежит он в папке пользователя: правка руками,
+    оборванная запись, чужой файл под тем же именем. Всё, что не похоже на
+    пару путей, дальше не пускаем — иначе на такой записи падает и откат, и
+    окно истории.
+    """
+    if not isinstance(raw, list):
+        return []
+    good: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        src, dst = entry.get("src"), entry.get("dst")
+        if isinstance(src, str) and isinstance(dst, str) and src and dst:
+            good.append({"src": src, "dst": dst})
+    return good
 
 
 def undo(undo_log: Path | str) -> list[tuple[str, str]]:
@@ -121,7 +161,7 @@ def undo(undo_log: Path | str) -> list[tuple[str, str]]:
     """
     entries = json.loads(Path(undo_log).read_text(encoding="utf-8"))
     notes: list[tuple[str, str]] = []
-    for entry in reversed(entries):
+    for entry in reversed(entries_of(entries)):
         src, dst = Path(entry["src"]), Path(entry["dst"])
         if not dst.exists():
             continue
