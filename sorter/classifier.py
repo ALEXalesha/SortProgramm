@@ -6,6 +6,28 @@ import re
 from .config import Config
 
 
+# Служебный номер, который программа приписывает при конфликте имён:
+# `отчёт.pdf` -> `отчёт (1).pdf`.
+_DEDUP_SUFFIX = re.compile(r"\s*\(\d+\)$")
+
+
+def base_name(filename: str) -> str:
+    """Имя без служебного номера ` (1)`, приписанного разрешением конфликтов.
+
+    Номер вставляется перед расширением, то есть ровно туда, где кончается
+    смысловая часть имени. Слова вроде `-fon.` или `.exe` из-за этого перестают
+    совпадать, и переразложение уносит уже разложенный файл в Others — просто
+    потому, что программа сама его когда-то переименовала.
+
+    Регулярки в rules.json обходят это вручную, дописывая `(\\s*\\(\\d+\\))?`
+    к каждому шаблону. Здесь то же самое делается один раз и для слов тоже.
+    """
+    stem, dot, extension = filename.rpartition(".")
+    if not dot:
+        return _DEDUP_SUFFIX.sub("", filename)
+    return _DEDUP_SUFFIX.sub("", stem) + dot + extension
+
+
 def extension_of(filename: str) -> str:
     """Расширение в нижнем регистре без точки. Пустая строка, если его нет."""
     name = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
@@ -82,16 +104,22 @@ def explain_category(filename: str, content: str, config: Config) -> tuple[str, 
     Причина нужна для предпросмотра. Когда переразложение двигает сотню уже
     разложенных файлов, «почему» важнее «куда»: по нему видно, сработало
     новое правило или старая запись в overrides.
+
+    Разбирается имя без служебного номера (`base_name`), чтобы файл, который
+    программа сама переименовала в `отчёт (1).pdf`, оставался тем же файлом.
+    Правило под точное имя всё-таки ищется первым: если руки написали его
+    именно для `отчёт (1).pdf`, значит так и хотели.
     """
-    override = config.overrides.get(filename)
+    name = base_name(filename)
+    override = config.overrides.get(filename) or config.overrides.get(name)
     if override:
         return override, "правило"
 
-    by_pattern = match_pattern(filename, config.patterns)
+    by_pattern = match_pattern(name, config.patterns)
     if by_pattern:
         return by_pattern, "шаблон"
 
-    by_word = match_category(filename, content, config.categories)
+    by_word = match_category(name, content, config.categories)
     if by_word:
         return by_word, "слово"
 

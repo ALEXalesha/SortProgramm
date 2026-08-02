@@ -1,10 +1,12 @@
 """Проверки на найденные баги. Каждый тест — воспроизведение конкретной поломки."""
 import json
+from pathlib import Path
 
 from sorter.config import Config
 from sorter.classifier import explain_category, match_category
+from sorter.history import list_operations
 from sorter.mover import apply, undo
-from sorter.planner import build_plan
+from sorter.planner import build_plan, Move
 from sorter.scanner import scan
 
 
@@ -142,3 +144,171 @@ def test_cleanup_keeps_folder_that_still_has_files(tmp_path):
     touch(tmp_path / "Others" / "Videos" / "заметка.pdf")
     apply(build_plan(cfg, deep=True), cfg, dry_run=False)
     assert (tmp_path / "Others" / "Documents" / "заметка.pdf").exists()
+
+
+# --- журнал отмены ---
+
+
+def test_two_sorts_in_one_second_keep_both_logs(tmp_path):
+    """Имя журнала — метка времени с точностью до секунды.
+
+    Две сортировки подряд укладываются в одну секунду легко: нажал «Применить»,
+    поправил галочку, нажал снова. Одинаковое имя означало, что второй журнал
+    затирает первый, и ту сортировку уже никогда не откатить.
+    """
+    cfg = make_config(tmp_path)
+    touch(tmp_path / "клип.mp4")
+    first = apply(build_plan(cfg), cfg, dry_run=False)
+    touch(tmp_path / "второй клип.mp4")
+    second = apply(build_plan(cfg), cfg, dry_run=False)
+
+    assert first.undo_log != second.undo_log
+    assert first.undo_log.exists(), "первый журнал затёрт вторым"
+    assert len(list_operations(tmp_path)) == 2
+
+
+def test_history_keeps_order_of_sorts_within_one_second(tmp_path):
+    """Свежая сортировка стоит первой, даже если секунда та же."""
+    cfg = make_config(tmp_path)
+    names = ["клип1.mp4", "клип2.mp4", "клип3.mp4"]
+    for name in names:
+        touch(tmp_path / name)
+        apply(build_plan(cfg), cfg, dry_run=False)
+
+    moved = [Path(op.entries[0]["src"]).name for op in list_operations(tmp_path)]
+    assert moved == list(reversed(names))
+
+
+def test_nothing_moved_leaves_no_record_in_history(tmp_path):
+    """Пустой журнал — запись «0 файлов», которая ничего не откатывает."""
+    cfg = make_config(tmp_path)
+    ghost = Move(tmp_path / "нет.mp4", tmp_path / "Медиа" / "Videos" / "нет.mp4")
+
+    result = apply([ghost], cfg, dry_run=False)
+
+    assert result.undo_log is None
+    assert list_operations(tmp_path) == []
+
+
+def test_apply_survives_unwritable_downloads_folder(tmp_path):
+    """`main.py --path X:/нет --apply` падал стеком на создании `.sorter`.
+
+    Съёмный диск вынули, папку переименовали, путь указали с опечаткой —
+    журнал записать некуда. Ронять программу на этом нельзя: файлы уже
+    переехали, и про это надо доложить, а не показать трассировку.
+    """
+    занято = touch(tmp_path / "не папка")  # под файлом каталог не создать
+    cfg = make_config(занято / "загрузки")
+    src = touch(tmp_path / "клип.mp4")
+
+    result = apply([Move(src, tmp_path / "куда" / "клип.mp4")], cfg, dry_run=False)
+
+    assert result.moved == 1
+    assert result.undo_log is None
+    assert result.errors, "потерю журнала отмены надо показать, а не проглотить"
+
+
+# --- испорченные настройки не ломают запуск ---
+
+
+def test_broken_config_does_not_block_startup(tmp_path):
+    """config.json программа пишет сама при каждом закрытии окна.
+
+    Оборванная запись превращала программу в кирпич: стек вместо окна, и
+    поправить путь через интерфейс уже нельзя.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text('{"downloads_path": "X:/z", "extern', encoding="utf-8")
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.downloads_path, "должен быть путь по умолчанию"
+    assert any("config.json" in p for p in cfg.problems)
+
+
+def test_config_without_downloads_path_uses_default(tmp_path):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"external_3d": {}}), encoding="utf-8")
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.downloads_path == str(Path.home() / "Downloads")
+    assert cfg.problems
+
+
+def test_external_3d_not_an_object_does_not_crash_planning(tmp_path):
+    """Правка руками: `"external_3d": "C:/All_3d"` вместо объекта."""
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(downloads), "external_3d": "C:/All_3d"}),
+        encoding="utf-8")
+
+    cfg = Config.load(cfg_path)
+
+    assert build_plan(cfg, send_3d_external=True) == []
+    assert cfg.problems
+
+
+def test_external_3d_without_extensions_still_sends_models(tmp_path):
+    """Окно сохраняет только `enabled` и `path` — список расширений терялся.
+
+    Галочка «3D-модели → отдельная папка» после этого молча ничего не делала.
+    """
+    downloads = tmp_path / "загрузки"
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "downloads_path": str(downloads),
+        "external_3d": {"enabled": True, "path": str(tmp_path / "All_3d")},
+    }), encoding="utf-8")
+    touch(downloads / "деталь.stl")
+
+    cfg = Config.load(cfg_path)
+    moves = build_plan(cfg, send_3d_external=True)
+
+    assert [m.dst for m in moves] == [tmp_path / "All_3d" / "stl" / "деталь.stl"]
+
+
+def test_saved_config_keeps_3d_extensions(tmp_path):
+    """Сохранение из окна не должно ронять список расширений обратно в пустоту."""
+    cfg_path = tmp_path / "config.json"
+    cfg = Config(downloads_path="X:/z", external_3d={"enabled": True, "path": "Y:/m"})
+    cfg.save(cfg_path)
+
+    assert Config.load(cfg_path).external_3d["extensions"]
+
+
+# --- служебный номер ` (1)` в имени ---
+
+
+def test_dedup_suffix_does_not_change_category(tmp_path):
+    """`abc-fon.png` ловится словом `-fon.`, а `abc-fon (1).png` уже нет.
+
+    Номер приписывает сама программа при конфликте имён. После этого
+    переразложение считало файл другим и уносило его в Others.
+    """
+    cfg = make_config(tmp_path)
+    cfg.categories = {"3D": ["-fon."]}
+    assert explain_category("abc-fon (1).png", "", cfg)[0] == "3D"
+
+
+def test_resort_does_not_move_file_it_renamed_itself(tmp_path):
+    """Переразложение должно быть устойчивым: второй прогон ничего не двигает."""
+    cfg = make_config(tmp_path)
+    cfg.categories = {"3D": ["-fon."]}
+    cfg.type_map = {"Images": ["png"]}
+    cfg.managed_folders = ["3D", "Images", "Others", "Misc"]
+    touch(tmp_path / "abc-fon.png")
+    touch(tmp_path / "3D" / "Images" / "abc-fon.png")
+
+    apply(build_plan(cfg, deep=True), cfg, dry_run=False)
+
+    assert build_plan(cfg, deep=True) == []
+
+
+def test_override_still_matches_exact_name_with_number(tmp_path):
+    """Правило под конкретное имя с номером важнее правила под имя без него."""
+    cfg = make_config(tmp_path)
+    cfg.overrides = {"отчёт (1).pdf": "Учёба", "отчёт.pdf": "Медиа"}
+    assert explain_category("отчёт (1).pdf", "", cfg)[0] == "Учёба"

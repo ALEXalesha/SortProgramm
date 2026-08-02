@@ -52,6 +52,17 @@ def _external_3d_path(config: Config) -> Path | None:
     return Path(raw) if raw else None
 
 
+def _external_3d_extensions(config: Config) -> set[str]:
+    """Расширения, которые едут во внешнюю папку 3D.
+
+    Проверка типа здесь дублирует `Config.load`: конфиг собирают и напрямую —
+    из тестов, из CLI, — а падать на строке вместо словаря планировщик не должен.
+    """
+    if not isinstance(config.external_3d, dict):
+        return set()
+    return {str(e).lower() for e in config.external_3d.get("extensions", [])}
+
+
 def plan(
     files: list[Path],
     config: Config,
@@ -68,7 +79,7 @@ def plan(
     по нескольким источникам (загрузки + All_3d), чтобы имена не сталкивались.
     """
     root = Path(config.downloads_path)
-    ext_3d = {e.lower() for e in config.external_3d.get("extensions", [])}
+    ext_3d = _external_3d_extensions(config)
     external_path = _external_3d_path(config)
 
     moves: list[Move] = []

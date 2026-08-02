@@ -22,6 +22,14 @@ from pathlib import Path
 RULES_FILENAME = "rules.json"
 OVERRIDES_FILENAME = "overrides.json"
 
+# Расширения 3D-моделей по умолчанию. Окно сохраняет в config.json только
+# «включено» и «путь», поэтому список расширений из файла пропадал после первого
+# же закрытия — и галочка «3D → отдельная папка» молча переставала работать.
+DEFAULT_3D_EXTENSIONS = ["3mf", "obj", "stl", "gcode"]
+
+# Куда смотреть, если папка загрузок в настройках не указана или файл испорчен.
+DEFAULT_DOWNLOADS = str(Path.home() / "Downloads")
+
 # Что относится к правилам, а что к настройкам. Ключи, не попавшие ни туда, ни
 # сюда, сохраняются как есть — чужую правку конфига мы не выбрасываем.
 RULE_KEYS = (
@@ -56,6 +64,27 @@ def _read_json(path: Path, problems: list[str]) -> dict | None:
     return data
 
 
+def _clean_3d(raw, problems: list[str]) -> dict:
+    """Приводит настройку внешней папки 3D к словарю с полным набором ключей.
+
+    Читателей у этой настройки пятеро: планировщик, оба окна и две проверки
+    пути. Раньше половина звала `.get` прямо, а половина сначала проверяла тип —
+    и строка вместо объекта (`"external_3d": "C:/All_3d"` после правки руками)
+    роняла программу на запуске, даже когда вынос 3D был выключен. Разбираемся
+    с этим здесь, один раз, чтобы дальше все читатели имели дело со словарём.
+    """
+    if not isinstance(raw, dict):
+        if raw:
+            problems.append(
+                "config.json: external_3d — не объект. Настройка 3D сброшена.")
+        return {}
+    data = dict(raw)
+    extensions = data.get("extensions")
+    if not isinstance(extensions, list) or not extensions:
+        data["extensions"] = list(DEFAULT_3D_EXTENSIONS)
+    return data
+
+
 @dataclass
 class Config:
     downloads_path: str
@@ -80,14 +109,23 @@ class Config:
         вместе с настройками. Тогда берём их оттуда, чтобы программа не
         осталась вовсе без категорий.
 
-        Испорченный вспомогательный файл не мешает запуску: о нём пишем в
-        `problems`, а работаем с тем, что есть. `overrides.json` программа пишет
-        сама, и оборванная запись (нет места, выключили питание) не должна
-        превращать её в кирпич со стеком вместо окна.
+        Испорченный файл не мешает запуску: о нём пишем в `problems`, а
+        работаем с тем, что есть. Это касается и самого `config.json` — его
+        программа переписывает при каждом закрытии окна, и оборванная запись
+        (нет места, выключили питание) не должна превращать её в кирпич со
+        стеком вместо окна. Кирпич хуже вдвойне: поправить путь через интерфейс
+        уже не выйдет, потому что интерфейс не открывается.
         """
         path = Path(path)
         problems: list[str] = []
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = _read_json(path, problems) or {}
+
+        downloads = data.get("downloads_path")
+        if not isinstance(downloads, str) or not downloads:
+            problems.append(
+                "config.json: папка загрузок не указана. "
+                f"Взята папка по умолчанию: {DEFAULT_DOWNLOADS}")
+            downloads = DEFAULT_DOWNLOADS
 
         rules_path = path.with_name(RULES_FILENAME)
         rules = _read_json(rules_path, problems) if rules_path.exists() else None
@@ -97,7 +135,7 @@ class Config:
         overrides = _read_json(path.with_name(OVERRIDES_FILENAME), problems) or {}
 
         return cls(
-            downloads_path=data["downloads_path"],
+            downloads_path=downloads,
             categories=rules.get("categories", {}),
             patterns=rules.get("patterns", {}),
             category_hints=rules.get("category_hints", {}),
@@ -105,7 +143,7 @@ class Config:
             managed_folders=rules.get("managed_folders", []),
             ignore=rules.get("ignore", []),
             overrides=overrides,
-            external_3d=data.get("external_3d", {}),
+            external_3d=_clean_3d(data.get("external_3d"), problems),
             fallback_category=rules.get("fallback_category", "Others"),
             fallback_type=rules.get("fallback_type", "Misc"),
             extra={k: v for k, v in data.items() if k not in RULE_KEYS + USER_KEYS},
@@ -117,11 +155,14 @@ class Config:
 
         Незнакомые ключи из файла возвращаются на место: если кто-то дописал
         своё в config.json, сохранение из окна не должно это стирать.
+
+        Список расширений 3D дописывается сам: окно про него не знает и знать не
+        должно, а без него настройка выглядит рабочей, но не делает ничего.
         """
         data = {
             **self.extra,
             "downloads_path": self.downloads_path,
-            "external_3d": self.external_3d,
+            "external_3d": _clean_3d(self.external_3d, []) if self.external_3d else {},
         }
         Path(path).write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"

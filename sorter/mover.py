@@ -37,17 +37,35 @@ def apply(moves: list[Move], config: Config, dry_run: bool = True) -> Result:
         except OSError as exc:
             result.errors.append((str(mv.src), str(exc)))
 
-    result.undo_log = _write_undo_log(performed, config)
+    # Пустой журнал — это запись «0 файлов» в истории, которая ничего не
+    # откатывает. Когда двигать было нечего, истории об этом знать незачем.
+    if performed:
+        try:
+            result.undo_log = _write_undo_log(performed, config)
+        except OSError as exc:
+            # Файлы уже переехали, а вернуть их назад теперь нечем. Молчать об
+            # этом нельзя: снаружи всё выглядит как обычная успешная сортировка.
+            result.errors.append(("журнал отмены", f"не записан: {exc}"))
     _cleanup_emptied(performed, config)
     return result
 
 
 def _write_undo_log(performed: list[dict[str, str]], config: Config) -> Path:
-    root = Path(config.downloads_path)
-    log_dir = root / ".sorter"
-    log_dir.mkdir(exist_ok=True)
+    """Пишет журнал отмены и возвращает путь к нему.
+
+    Имя журнала — метка времени с точностью до секунды, и две сортировки подряд
+    укладываются в одну секунду запросто: нажал «Применить», поправил галочку,
+    нажал снова. Занятое имя поэтому не перезаписываем, а дополняем номером —
+    иначе прошлый журнал исчезает вместе с возможностью откатить ту сортировку.
+    """
+    log_dir = Path(config.downloads_path) / ".sorter"
+    log_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = log_dir / f"undo_{stamp}.json"
+    serial = 2
+    while log_path.exists():
+        log_path = log_dir / f"undo_{stamp}_{serial}.json"
+        serial += 1
     log_path.write_text(json.dumps(performed, ensure_ascii=False, indent=2), encoding="utf-8")
     return log_path
 

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,10 @@ _PREFIX = "undo_"
 _SUFFIX = ".json"
 _STAMP_FMT = "%Y%m%d_%H%M%S"
 
+# `undo_20260802_193157.json` и `undo_20260802_193157_2.json`: номер приписывает
+# `mover`, когда в одну секунду уложилось несколько сортировок.
+_NAME_RE = re.compile(rf"^{_PREFIX}(\d{{8}}_\d{{6}})(?:_(\d+))?\{_SUFFIX}$")
+
 
 @dataclass
 class Operation:
@@ -24,20 +29,28 @@ class Operation:
     log_path: Path
     when: datetime
     entries: list[dict[str, str]]
+    serial: int = 1
 
     @property
     def count(self) -> int:
         return len(self.entries)
 
 
-def _parse_stamp(name: str) -> datetime | None:
-    if not (name.startswith(_PREFIX) and name.endswith(_SUFFIX)):
+def _parse_stamp(name: str) -> tuple[datetime, int] | None:
+    """Время сортировки и её номер внутри секунды. None, если имя чужое.
+
+    Номер нужен для порядка: без него две сортировки одной секунды встают в
+    списке как попало, и «отменить последнюю» отменяет не ту.
+    """
+    match = _NAME_RE.match(name)
+    if not match:
         return None
-    stamp = name[len(_PREFIX):-len(_SUFFIX)]
+    stamp, serial = match.groups()
     try:
-        return datetime.strptime(stamp, _STAMP_FMT)
+        when = datetime.strptime(stamp, _STAMP_FMT)
     except ValueError:
         return None
+    return when, int(serial or 1)
 
 
 def list_operations(downloads_path: str | Path) -> list[Operation]:
@@ -51,8 +64,8 @@ def list_operations(downloads_path: str | Path) -> list[Operation]:
 
     ops: list[Operation] = []
     for path in log_dir.glob(f"{_PREFIX}*{_SUFFIX}"):
-        when = _parse_stamp(path.name)
-        if when is None:
+        stamp = _parse_stamp(path.name)
+        if stamp is None:
             continue
         try:
             entries = json.loads(path.read_text(encoding="utf-8"))
@@ -60,9 +73,10 @@ def list_operations(downloads_path: str | Path) -> list[Operation]:
             continue
         if not isinstance(entries, list):
             continue
-        ops.append(Operation(path, when, entries))
+        when, serial = stamp
+        ops.append(Operation(path, when, entries, serial))
 
-    ops.sort(key=lambda op: op.when, reverse=True)
+    ops.sort(key=lambda op: (op.when, op.serial), reverse=True)
     return ops
 
 
