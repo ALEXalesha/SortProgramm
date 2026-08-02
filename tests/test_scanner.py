@@ -70,11 +70,17 @@ def test_missing_folder_returns_empty(tmp_path):
 
 
 def test_deep_scan_walks_own_subfolders(tmp_path):
-    """Переразложение заходит внутрь папок, которые программа создала сама."""
+    """Переразложение заходит внутрь папок программы — но только своих.
+
+    Своя папка — та, чьё имя есть в managed_folders (категория или тип).
+    Вложенная `2026` создана руками, поэтому её содержимое не трогаем.
+    """
     cfg = make_config(tmp_path)
-    touch(tmp_path / "Documents" / "2026" / "отчёт.pdf")
+    cfg.managed_folders = cfg.managed_folders + ["Учёба"]
+    touch(tmp_path / "Учёба" / "Documents" / "отчёт.pdf")
+    touch(tmp_path / "Учёба" / "Documents" / "2026" / "личное.pdf")
     found = scan(tmp_path, cfg, deep=True)
-    assert found == [tmp_path / "Documents" / "2026" / "отчёт.pdf"]
+    assert found == [tmp_path / "Учёба" / "Documents" / "отчёт.pdf"]
 
 
 def test_deep_scan_never_enters_foreign_folder(tmp_path):

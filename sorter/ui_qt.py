@@ -219,10 +219,18 @@ class HistoryDialog(QDialog):
         if ok != QMessageBox.StandardButton.Yes:
             return
         try:
-            history.undo_operation(op)
+            notes = history.undo_operation(op)
         except OSError as exc:
             QMessageBox.critical(self, "Ошибка отмены", str(exc))
             return
+        if notes:
+            # Молчать нельзя: снаружи откат выглядит успешным, а часть данных
+            # лежит под другими именами — как раз то, что легко не заметить.
+            lines = "\n".join(f"• {where}: {why}" for where, why in notes[:10])
+            more = f"\n…и ещё {len(notes) - 10}" if len(notes) > 10 else ""
+            QMessageBox.warning(
+                self, "Откат прошёл с оговорками",
+                f"Не всё вернулось ровно на своё место:\n\n{lines}{more}")
         self._reload()
 
 
@@ -260,6 +268,14 @@ class GlassWindow(QWidget):
         root.addLayout(self._footer())
 
         self.setStyleSheet(STYLE)
+
+        if self.config.problems:
+            # Без правил всё уедет в Others. Сказать надо до «Применить», а не
+            # после — иначе пользователь увидит последствия, а не причину.
+            QMessageBox.warning(
+                self, "Настройки прочитаны не полностью",
+                "\n".join(self.config.problems)
+                + "\n\nПрограмма запустилась, но раскладка может быть неверной.")
 
     def _title_bar(self):
         bar = QHBoxLayout()

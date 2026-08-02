@@ -66,10 +66,17 @@ def list_operations(downloads_path: str | Path) -> list[Operation]:
     return ops
 
 
-def undo_operation(op: Operation) -> None:
-    """Откатывает операцию (возвращает файлы на места) и удаляет её лог из истории."""
-    _undo(op.log_path)
+def undo_operation(op: Operation) -> list[tuple[str, str]]:
+    """Откатывает операцию и убирает её лог. Возвращает список оговорок.
+
+    Оговорка — это когда файл вернулся не туда, куда собирался: исходный путь
+    оказался занят. Список пустой, если всё легло на свои места. Показать его
+    обязательно: молчаливый «успешный» откат, после которого данные лежат под
+    другим именем, — худший из возможных исходов.
+    """
+    notes = _undo(op.log_path)
     try:
         op.log_path.unlink()
     except OSError:
         pass
+    return notes

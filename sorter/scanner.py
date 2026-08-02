@@ -39,12 +39,16 @@ def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
 
 
 def _walk_managed(folder: Path, config: Config) -> list[Path]:
-    """Все файлы внутри управляемой папки, рекурсивно.
+    """Файлы внутри управляемой папки. Вглубь — только по своим папкам.
 
-    Сюда попадают только папки из `managed_folders` — те, что программа создала
-    сама. Чужие папки (распакованные архивы, миры игр, репозитории) в этот
-    обход не приходят: их отсеивает `scan`.
+    Своя папка — та, чьё имя есть в `managed_folders`: категория или тип. Всё
+    остальное создал пользователь, и это чужое даже внутри `Учёба/Documents`.
+    Подпапка `9 класс` — ручная раскладка; зайдя туда, переразложение вынесло
+    бы файлы наверх и молча уничтожило порядок, который наводили руками.
+
+    Правило то же, что и для корня: программа трогает только то, что создала.
     """
+    managed = set(config.managed_folders)
     files: list[Path] = []
     stack = [folder]
     while stack:
@@ -55,7 +59,8 @@ def _walk_managed(folder: Path, config: Config) -> list[Path]:
             continue
         for entry in entries:
             if entry.is_dir():
-                stack.append(entry)
+                if entry.name in managed:
+                    stack.append(entry)
             elif not _is_ignored(entry.name, config.ignore):
                 files.append(entry)
     return sorted(files)

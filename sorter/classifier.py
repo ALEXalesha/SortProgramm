@@ -29,16 +29,25 @@ def match_category(filename: str, content: str, categories: dict[str, list[str]]
     Сначала ищем слово в имени файла, затем в содержимом. Сравнение —
     регистронезависимое вхождение подстроки. None, если ничего не подошло.
 
+    Слова, начинающиеся с точки (`.exe`, `.json`, `.gguf`), — это расширения, и
+    по содержимому они не ищутся. Иначе заметка со строкой «скачай installer.exe»
+    объявлялась бы программой: в тексте такие подстроки встречаются сплошь и
+    рядом, а значат совсем не то, что в имени файла.
+
     >>> Это сердце логики. Порядок категорий в config задаёт приоритет:
     первая подошедшая выигрывает. Хочешь иначе (по границам слова,
     вес имени против содержимого) — менять здесь.
     """
     name = filename.lower()
     body = content.lower()
-    for source in (name, body):
+    for source, extensions_count in ((name, True), (body, False)):
         for category, keywords in categories.items():
-            if any(word.lower() in source for word in keywords):
-                return category
+            for word in keywords:
+                word = word.lower()
+                if word.startswith(".") and not extensions_count:
+                    continue
+                if word in source:
+                    return category
     return None
 
 

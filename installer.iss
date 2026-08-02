@@ -1,6 +1,6 @@
 ﻿[Setup]
 AppName=Сортировщик загрузок
-AppVersion=1.2
+AppVersion=1.3
 AppPublisher=Alexey
 DefaultDirName={autopf}\Сортировщик загрузок
 DefaultGroupName=Сортировщик загрузок
@@ -27,6 +27,11 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 
 [Files]
 Source: "dist\Сортировщик.exe"; DestDir: "{app}"; Flags: ignoreversion
+; rules.json — правила раскладки, их поставляет программа: обновляем всегда,
+; иначе новые категории не доедут до уже установленной копии.
+Source: "rules.json"; DestDir: "{app}"; Flags: ignoreversion
+; config.json и overrides.json принадлежат пользователю (пути, ручные правила) —
+; при обновлении не трогаем.
 Source: "config.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
 Source: "overrides.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion

@@ -196,11 +196,18 @@ def classify_many(
     """
     batches = batched(filenames, batch_size)
     result: dict[str, str] = {}
+    failures: list[Exception] = []
     for index, batch in enumerate(batches, start=1):
         try:
             result.update(classifier(batch, categories, api_key, **kwargs))
-        except Exception:
-            pass
+        except Exception as exc:
+            failures.append(exc)
         if on_progress:
             on_progress(index, len(batches))
+
+    # Упало всё и ничего не разобрано — это не «пустой ответ», а поломка:
+    # неверный ключ, нет сети, сменился адрес. Молча вернуть {} значит показать
+    # «ИИ разложил 0» и спрятать причину. Частичный успех важнее — его отдаём.
+    if failures and not result:
+        raise failures[0]
     return result

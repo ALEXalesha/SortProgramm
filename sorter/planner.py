@@ -155,7 +155,11 @@ def build_plan(
 
     external_path = _external_3d_path(config)
     if external_path is not None:
-        loose = scan(external_path, config, deep=False)
+        # Если All_3d указывает на саму папку загрузок, второй скан вернёт те же
+        # файлы. Без этого фильтра один файл попал бы в план дважды: первое
+        # перемещение прошло бы, второе упало с «нет файла».
+        planned = {mv.src for mv in moves}
+        loose = [f for f in scan(external_path, config, deep=False) if f not in planned]
         moves += plan_3d_folder(loose, config, taken=taken)
 
     return moves
