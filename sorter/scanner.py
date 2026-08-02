@@ -14,14 +14,14 @@ def _is_ignored(name: str, patterns: list[str]) -> bool:
 def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
     """Файлы для сортировки из корня папки.
 
-    deep=True  — как раньше: файлы корня + рекурсивно из управляемых папок
-                 (config.managed_folders). Используется в режиме ИИ.
+    deep=True  — файлы корня + рекурсивно из папок, которые программа создала
+                 сама (config.managed_folders). Режим переразложения: старые
+                 загрузки проверяются заново по текущим правилам.
     deep=False — только файлы, лежащие прямо в корне; ни в какие подпапки
-                 не заходим. Используется в обычной сортировке без ИИ и при
-                 разборе внешней папки All_3d.
+                 не заходим. Обычная уборка и разбор внешней папки All_3d.
 
     Папки, которых нет в config.managed_folders, не обходятся никогда — это
-    чужие папки программ и игр.
+    чужие папки программ и игр. Их программа не двигает и не разбирает.
     """
     root = Path(root)
     found: list[Path] = []
@@ -39,16 +39,12 @@ def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
 
 
 def _walk_managed(folder: Path, config: Config) -> list[Path]:
-    """Файлы внутри управляемой папки, кроме корзины целых папок.
+    """Все файлы внутри управляемой папки, рекурсивно.
 
-    В `folder_bucket` (`_Папки`) лежат перенесённые целиком папки: мир Minecraft,
-    git-репозиторий, мод. Если войти туда и разложить их содержимое по типам,
-    папка перестанет существовать как единица — `level.dat` уедет в Misc,
-    исходники в Code, и восстановить это можно будет только вручную.
-
-    Поэтому обход ручной, со стеком: `rglob` не умеет отсекать поддеревья.
+    Сюда попадают только папки из `managed_folders` — те, что программа создала
+    сама. Чужие папки (распакованные архивы, миры игр, репозитории) в этот
+    обход не приходят: их отсеивает `scan`.
     """
-    bucket = config.folder_bucket
     files: list[Path] = []
     stack = [folder]
     while stack:
@@ -59,8 +55,7 @@ def _walk_managed(folder: Path, config: Config) -> list[Path]:
             continue
         for entry in entries:
             if entry.is_dir():
-                if entry.name != bucket:
-                    stack.append(entry)
+                stack.append(entry)
             elif not _is_ignored(entry.name, config.ignore):
                 files.append(entry)
     return sorted(files)

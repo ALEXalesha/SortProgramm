@@ -31,7 +31,11 @@ def test_destination_is_category_type_only(tmp_path):
     f = tmp_path / "задачи 9 класс.pdf"
     touch(f)
     moves = plan([f], cfg)
-    assert moves == [Move(f, tmp_path / "Учёба" / "Documents" / "задачи 9 класс.pdf")]
+    # Сравниваем маршрут, а не Move целиком: в note лежит причина выбора
+    # категории, и она к структуре пути отношения не имеет.
+    assert [(m.src, m.dst) for m in moves] == [
+        (f, tmp_path / "Учёба" / "Documents" / "задачи 9 класс.pdf")
+    ]
 
 
 def test_unmatched_goes_to_others(tmp_path):

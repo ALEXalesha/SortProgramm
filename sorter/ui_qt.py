@@ -16,7 +16,6 @@ from PyQt6.QtWidgets import (
 
 from .config import Config
 from .scanner import scan
-from .folders import scan_folders
 from .planner import build_plan, Move
 from .mover import apply
 from .util import rel_to
@@ -330,14 +329,16 @@ class GlassWindow(QWidget):
         row = QHBoxLayout()
         self.move_enabled = QCheckBox("Перемещать файлы")
         row.addWidget(self.move_enabled)
-        self.with_folders = QCheckBox("И целые папки")
-        self.with_folders.setToolTip(
-            "Раскладывать и папки из корня загрузок целиком:\n"
-            "Категория/_Папки/имя. Папка едет одним куском —\n"
-            "мир Minecraft или репозиторий не разбираются по файлам."
+        self.resort = QCheckBox("Переразложить старое")
+        self.resort.setToolTip(
+            "Проверить заново и то, что программа уже разложила\n"
+            "по своим папкам — чтобы новые категории и шаблоны\n"
+            "применились к старым загрузкам.\n\n"
+            "Чужие папки (распакованные архивы, миры игр,\n"
+            "репозитории) не трогаются в любом случае."
         )
-        self.with_folders.stateChanged.connect(lambda _: self.preview())
-        row.addWidget(self.with_folders)
+        self.resort.stateChanged.connect(lambda _: self.preview())
+        row.addWidget(self.resort)
         row.addStretch(1)
         self.status = QLabel("Нажми «Очистить», чтобы построить план.", objectName="status")
         row.addWidget(self.status)
@@ -430,9 +431,12 @@ class GlassWindow(QWidget):
         self.preview()
 
     def preview(self, deep: bool = False):
-        """Строит план. deep=False — обычная сортировка (только корень загрузок),
-        deep=True — после ИИ (все файлы, включая подпапки). Папка All_3d
-        разбирается по расширениям в любом случае."""
+        """Строит план.
+
+        Глубину задаёт либо аргумент (после ИИ она всегда полная), либо галочка
+        «Переразложить старое». Папка All_3d разбирается в любом случае.
+        """
+        deep = deep or self.resort.isChecked()
         self._sync_config()
         root = Path(self.config.downloads_path)
         if not self.config.downloads_path or not root.is_dir():
@@ -441,11 +445,7 @@ class GlassWindow(QWidget):
             self.status.setText("Папка не найдена — укажи существующий путь.")
             return
         self.moves = build_plan(
-            self.config,
-            send_3d_external=self.to_3d.isChecked(),
-            deep=deep,
-            include_folders=self.with_folders.isChecked(),
-        )
+            self.config, send_3d_external=self.to_3d.isChecked(), deep=deep)
         self.table.setRowCount(len(self.moves))
         for r, mv in enumerate(self.moves):
             self.table.setItem(r, 0, QTableWidgetItem(rel_to(mv.src, root)))
@@ -479,10 +479,6 @@ class GlassWindow(QWidget):
             return
         files = scan(self.config.downloads_path, self.config, deep=True)
         names = [f.name for f in files]
-        # Папки уходят к ИИ с косой чертой на конце — так модель понимает, что
-        # это не файл без расширения, и оценивает содержимое целиком.
-        if self.with_folders.isChecked():
-            names += [f"{d.name}/" for d in scan_folders(self.config.downloads_path, self.config)]
         if not names:
             self.status.setText("Нечего разбирать.")
             return

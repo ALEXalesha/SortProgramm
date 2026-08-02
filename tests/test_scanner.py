@@ -69,22 +69,29 @@ def test_missing_folder_returns_empty(tmp_path):
     assert scan(missing, make_config(tmp_path)) == []
 
 
-def test_deep_scan_does_not_enter_folder_bucket(tmp_path):
-    """Целые папки в `_Папки` неприкосновенны.
-
-    Без этого глубокий скан (режим ИИ) разобрал бы перенесённый мир Minecraft
-    по типам: level.dat в Misc, текстуры в Images — и папки бы не стало.
-    """
-    cfg = make_config(tmp_path)
-    cfg.folder_bucket = "_Папки"
-    touch(tmp_path / "Documents" / "note.txt")
-    touch(tmp_path / "Documents" / "_Папки" / "fluga" / "level.dat")
-    found = scan(tmp_path, cfg, deep=True)
-    assert found == [tmp_path / "Documents" / "note.txt"]
-
-
-def test_deep_scan_still_walks_normal_subfolders(tmp_path):
+def test_deep_scan_walks_own_subfolders(tmp_path):
+    """Переразложение заходит внутрь папок, которые программа создала сама."""
     cfg = make_config(tmp_path)
     touch(tmp_path / "Documents" / "2026" / "отчёт.pdf")
     found = scan(tmp_path, cfg, deep=True)
     assert found == [tmp_path / "Documents" / "2026" / "отчёт.pdf"]
+
+
+def test_deep_scan_never_enters_foreign_folder(tmp_path):
+    """Чужая папка не разбирается даже при переразложении.
+
+    Мир Minecraft или репозиторий — единица, а не набор файлов: разложив их
+    содержимое по типам, программа уничтожила бы папку.
+    """
+    cfg = make_config(tmp_path)
+    touch(tmp_path / "fluga" / "level.dat")
+    touch(tmp_path / "claude-usage" / ".git" / "HEAD")
+    touch(tmp_path / "Documents" / "note.txt")
+    found = scan(tmp_path, cfg, deep=True)
+    assert found == [tmp_path / "Documents" / "note.txt"]
+
+
+def test_foreign_folders_untouched_without_deep(tmp_path):
+    cfg = make_config(tmp_path)
+    touch(tmp_path / "MalumMenu" / "winhttp.dll")
+    assert scan(tmp_path, cfg, deep=False) == []

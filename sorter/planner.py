@@ -4,9 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .classifier import classify, extension_of
+from .classifier import classify, explain_category, extension_of
 from .config import Config
-from .folders import classify_folder, scan_folders
 from .scanner import scan
 
 TEXT_EXTENSIONS = {"txt", "md", "csv"}
@@ -15,7 +14,7 @@ CONTENT_PREVIEW_CHARS = 2000
 
 @dataclass(frozen=True)
 class Move:
-    """Одно перемещение. `note` — почему так решили (для папок), пусто для файлов."""
+    """Одно перемещение. `note` — чем выбрана категория (правило/шаблон/слово)."""
 
     src: Path
     dst: Path
@@ -32,17 +31,11 @@ def _read_content(path: Path) -> str:
         return ""
 
 
-def _dedup(dst: Path, taken: set[Path], split_extension: bool = True) -> Path:
-    """Свободное имя: при занятом добавляет ` (1)`, ` (2)`…
-
-    split_extension=False — для папок. У папки нет расширения, но точки в имени
-    есть: `zapret-discord-youtube-1.9.2` разбилось бы на stem `...-1.9` и suffix
-    `.2` и превратилось в `zapret-discord-youtube-1.9 (1).2`. Номер должен идти
-    в конец целиком.
-    """
+def _dedup(dst: Path, taken: set[Path]) -> Path:
+    """Свободное имя: при занятом добавляет ` (1)`, ` (2)`…"""
     if dst not in taken and not dst.exists():
         return dst
-    stem, suffix = (dst.stem, dst.suffix) if split_extension else (dst.name, "")
+    stem, suffix = dst.stem, dst.suffix
     i = 1
     while True:
         candidate = dst.with_name(f"{stem} ({i}){suffix}")
@@ -83,7 +76,9 @@ def plan(
         taken = set()
 
     for src in files:
-        category, file_type, extension = classify(src.name, _read_content(src), config)
+        content = _read_content(src)
+        category, reason = explain_category(src.name, content, config)
+        _, file_type, extension = classify(src.name, content, config)
 
         if send_3d_external and external_path is not None and extension in ext_3d:
             dst = external_path / extension / src.name
@@ -95,7 +90,7 @@ def plan(
 
         dst = _dedup(dst, taken)
         taken.add(dst)
-        moves.append(Move(src, dst))
+        moves.append(Move(src, dst, note=reason))
 
     return moves
 
@@ -132,60 +127,31 @@ def plan_3d_folder(
     return moves
 
 
-def plan_folders(
-    folders: list[Path],
-    config: Config,
-    taken: set[Path] | None = None,
-) -> list[Move]:
-    """План для целых папок: Категория/<folder_bucket>/имя.
-
-    Отдельная корзина (`_Папки`) вместо типа: у папки нет расширения, а мешать
-    её с файлами в `Игры/Installers` — значит потерять границу между «программа»
-    и «набор файлов программы». Подчёркивание в начале держит корзину сверху
-    списка в проводнике.
-    """
-    root = Path(config.downloads_path)
-    bucket = config.folder_bucket
-
-    moves: list[Move] = []
-    if taken is None:
-        taken = set()
-
-    for src in folders:
-        verdict = classify_folder(src, config)
-        dst = root / verdict.category / bucket / src.name
-        if src == dst:
-            continue
-        dst = _dedup(dst, taken, split_extension=False)
-        taken.add(dst)
-        moves.append(Move(src, dst, note=verdict.reason))
-
-    return moves
-
-
 def build_plan(
     config: Config,
     send_3d_external: bool = False,
     deep: bool = False,
-    include_folders: bool = False,
 ) -> list[Move]:
     """Полный план: загрузки + внешняя папка All_3d (всегда по расширениям).
 
-    deep управляет только загрузками: False — без ИИ (только корень загрузок),
-    True — режим ИИ (корень + управляемые папки рекурсивно). Папка All_3d
-    разбирается всегда, если её путь задан в конфиге, независимо от галочки 3D.
+    deep задаёт глубину разбора загрузок:
 
-    include_folders добавляет в план целые папки из корня загрузок. По умолчанию
-    выключено: перенос папки заметнее и рискованнее переноса файла, поэтому это
-    осознанный выбор, а не поведение по умолчанию.
+    - False — только файлы в корне загрузок. Обычная уборка: разложенное
+      не ворошим.
+    - True — корень плюс папки, которые программа сама создала
+      (`managed_folders`), рекурсивно. Это переразложение: уже разложенные
+      файлы проверяются заново, поэтому новые категории и шаблоны применяются
+      и к старым загрузкам.
+
+    Чужие папки — распакованные архивы, миры игр, репозитории — не трогаются
+    ни в одном режиме. Программа двигает только то, что создала сама.
+
+    Папка All_3d разбирается всегда, если её путь задан в конфиге.
     """
     taken: set[Path] = set()
 
     downloads = scan(config.downloads_path, config, deep=deep)
     moves = plan(downloads, config, send_3d_external=send_3d_external, taken=taken)
-
-    if include_folders:
-        moves += plan_folders(scan_folders(config.downloads_path, config), config, taken=taken)
 
     external_path = _external_3d_path(config)
     if external_path is not None:

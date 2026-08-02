@@ -73,10 +73,10 @@ class SorterApp:
             variable=self.to_3d, command=self.preview,
         ).pack(side="left", padx=12)
 
-        self.with_folders = tk.BooleanVar(value=False)
+        self.resort = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            bottom, text="И целые папки",
-            variable=self.with_folders, command=self.preview,
+            bottom, text="Переразложить старое",
+            variable=self.resort, command=self.preview,
         ).pack(side="left")
 
         self.apply_btn = ttk.Button(bottom, text="Применить", command=self.do_apply)
@@ -98,12 +98,12 @@ class SorterApp:
             messagebox.showerror("Ошибка", str(exc))
 
     def preview(self):
-        # Без ИИ: только корень загрузок (deep=False) + авторазбор All_3d по расширениям.
+        # Галочка «Переразложить старое» включает разбор папок, которые программа
+        # создала сама. Чужие папки не трогаются ни в каком режиме.
         self.moves = build_plan(
             self.config,
             send_3d_external=self.to_3d.get(),
-            deep=False,
-            include_folders=self.with_folders.get(),
+            deep=self.resort.get(),
         )
         self.tree.delete(*self.tree.get_children())
         root = Path(self.config.downloads_path)

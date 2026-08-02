@@ -86,7 +86,7 @@
       "flux",
       "openclaw",
       "deepseek",
-      "workflow",
+      "ltx",
       ".gguf",
       ".ggml",
       ".safetensors",
@@ -125,6 +125,10 @@
       "claude",
       ".py",
       ".jsx",
+      ".html",
+      ".css",
+      ".ts",
+      ".json",
       ".nsi"
     ],
     "Электроника": [
@@ -183,7 +187,11 @@
       "render",
       ".obj",
       ".gcode",
-      ".3mf"
+      ".3mf",
+      ".step",
+      ".stp",
+      ".f3d",
+      ".sldprt"
     ],
     "Игры": [
       "roblox",
@@ -215,6 +223,8 @@
       "shader",
       "exloader",
       "assetto",
+      "beamng",
+      "beammp",
       "csgo",
       ".dem"
     ],
@@ -273,7 +283,9 @@
       "recentfilesview",
       "shellbag",
       "blurmica",
-      "zamzar"
+      "zamzar",
+      ".exe",
+      ".msi"
     ],
     "Медиа": [
       "pesni.fm",
@@ -421,6 +433,10 @@
       "scs",
       "stl",
       "fbx",
+      "step",
+      "stp",
+      "f3d",
+      "sldprt",
       "exr"
     ],
     "Design": [
@@ -468,14 +484,6 @@
     "Нейросети",
     "Models"
   ],
-  "protected_folders": [
-    "Telegram Desktop",
-    "Downloads",
-    "Загрузки",
-    "temp",
-    "tmp"
-  ],
-  "folder_bucket": "_Папки",
   "ignore": [
     "*.crdownload",
     "*.part",

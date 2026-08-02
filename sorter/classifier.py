@@ -63,21 +63,35 @@ def match_pattern(filename: str, patterns: dict[str, list[str]]) -> str | None:
     return None
 
 
-def classify(filename: str, content: str, config: Config) -> tuple[str, str, str]:
-    """Возвращает тройку (категория, тип, расширение).
+def explain_category(filename: str, content: str, config: Config) -> tuple[str, str]:
+    """Категория и чем она выбрана: (категория, причина).
 
-    Категория решается по приоритету:
-    overrides → регулярки → ключевые слова → fallback.
+    Приоритет: overrides → регулярки → ключевые слова → fallback. Регулярки
+    идут раньше слов, потому что они конкретнее: `0001-0250.mp4` — точно
+    рендер, а слово «mp4» в списке Медиа забрало бы его себе.
 
-    Регулярки идут раньше слов, потому что они конкретнее: `0001-0250.mp4` —
-    точно рендер, а слово «mp4» в списке Медиа забрало бы его себе.
+    Причина нужна для предпросмотра. Когда переразложение двигает сотню уже
+    разложенных файлов, «почему» важнее «куда»: по нему видно, сработало
+    новое правило или старая запись в overrides.
     """
-    category = (
-        config.overrides.get(filename)
-        or match_pattern(filename, config.patterns)
-        or match_category(filename, content, config.categories)
-        or config.fallback_category
-    )
+    override = config.overrides.get(filename)
+    if override:
+        return override, "правило"
+
+    by_pattern = match_pattern(filename, config.patterns)
+    if by_pattern:
+        return by_pattern, "шаблон"
+
+    by_word = match_category(filename, content, config.categories)
+    if by_word:
+        return by_word, "слово"
+
+    return config.fallback_category, "не опознан"
+
+
+def classify(filename: str, content: str, config: Config) -> tuple[str, str, str]:
+    """Возвращает тройку (категория, тип, расширение)."""
+    category, _ = explain_category(filename, content, config)
     extension = extension_of(filename)
     file_type = match_type(extension, config.type_map, config.fallback_type)
     return category, file_type, extension
