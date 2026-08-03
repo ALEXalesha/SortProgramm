@@ -480,7 +480,14 @@ class GlassWindow(QWidget):
             if mv.note:
                 target = f"{target}   ({mv.note})"
             self.table.setItem(r, 1, QTableWidgetItem(target))
-        self.status.setText(f"План готов: {len(self.moves)} шт.")
+        # Галочка «3D → отдельная папка» без пути не делает ничего: модели
+        # уезжают в обычные категории, и по плану это видно только тому, кто
+        # помнит, куда они должны были поехать. При старте о такой настройке
+        # предупреждает `Config`, но галочку жмут и посреди работы.
+        tail = ("   Путь для 3D не указан — модели поедут в обычные категории."
+                if self.to_3d.isChecked() and not self.path_3d_edit.text().strip()
+                else "")
+        self.status.setText(f"План готов: {len(self.moves)} шт.{tail}")
 
     def _save_overrides(self) -> str:
         """Пишет overrides.json. Возвращает текст ошибки или пустую строку.
@@ -527,11 +534,19 @@ class GlassWindow(QWidget):
             return
         files = scan(
             self.config.downloads_path, self.config, deep=self.resort.isChecked())
-        names = [f.name for f in files]
+        # Одно имя — один вопрос. Ключ в overrides.json это имя без пути, поэтому
+        # второй `клип.mp4` из соседней папки не добавляет вопросу ничего: ответ
+        # будет тот же и распространится на оба файла. Раньше повторы уходили в
+        # запрос по разу на файл — лишние деньги, лишние пачки, и счёт
+        # «спрашиваю по N именам» из-за них врал.
+        names = list(dict.fromkeys(f.name for f in files))
         if not names:
             self.status.setText("Нечего разбирать.")
             return
         cats = list(self.config.categories.keys()) + [self.config.fallback_category]
+        # Сколько имён ушло в запрос. Ответ приходит один, без вопроса, а
+        # посчитать оставшихся без решения можно только сравнив одно с другим.
+        self._ai_asked = len(names)
         self.ai_btn.setEnabled(False)
         self.status.setText(f"Спрашиваю DeepSeek по {len(names)} именам…")
         self._worker = _AiWorker(
@@ -553,8 +568,18 @@ class GlassWindow(QWidget):
         # «Others» от модели — это «не знаю», а не решение. Правилом не пишем:
         # оно встало бы выше ключевых слов и закрыло файлу дорогу навсегда.
         rules = ai.useful_rules(mapping, self.config.fallback_category)
-        self.config.overrides.update(rules)
-        failure = self._save_overrides()
+        # Правило, которое уже есть, не трогаем. `update` не спрашивал, было ли
+        # там что-то, и решение, принятое руками, молча заменялось мнением
+        # модели — включая разобранный в README случай, где `Puck_Launcher.step`
+        # уезжает в «Игры» по слову launcher. Отменить это нечем: у
+        # overrides.json нет ни истории, ни журнала отмены, а следующее нажатие
+        # «✨ИИ» стирало починку снова. Файлы без правила модель разбирает
+        # по-прежнему, поэтому повторный запрос после новых категорий работает
+        # как работал.
+        kept = [name for name in rules if name in self.config.overrides]
+        fresh = {n: c for n, c in rules.items() if n not in self.config.overrides}
+        self.config.overrides.update(fresh)
+        failure = self._save_overrides() if fresh else ""
         # Глубина — та же, что была у запроса: план должен показывать ровно те
         # файлы, про которые спрашивали. Жёсткое deep=True вытаскивало в план
         # всё разложенное, хотя новые правила касались только корня.
@@ -565,12 +590,25 @@ class GlassWindow(QWidget):
         # кнопки ИИ нет, окон сообщений она не показывает, так что человек
         # ждал запроса, платил за него и не узнавал о нём ничего.
         self.preview()
-        skipped = len(mapping) - len(rules)
-        tail = f" (без решения: {skipped})" if skipped else ""
-        self.status.setText(f"ИИ разложил {len(rules)} шт.{tail}")
+        # Без решения — это про вопрос, а не про ответ. Раньше считали
+        # `len(mapping) - len(rules)`, то есть одни лишь «Others»: имена, про
+        # которые модель промолчала или ответила чужим ключом (сверка такой
+        # отбрасывает), не попадали никуда — ни в правила, ни в счёт. Окно
+        # отчитывалось «ИИ разложил 1 шт.», и человек, спросивший про сорок
+        # файлов и заплативший за все сорок, не узнавал, что тридцать девять
+        # остались неразобранными.
+        asked = getattr(self, "_ai_asked", len(mapping))
+        undecided = max(0, asked - len(rules))
+        notes = []
+        if undecided:
+            notes.append(f"без решения: {undecided}")
+        if kept:
+            notes.append(f"свои правила сохранены: {len(kept)}")
+        tail = f" ({'; '.join(notes)})" if notes else ""
+        self.status.setText(f"ИИ разложил {len(fresh)} шт.{tail}")
         if failure:
             self.status.setText(
-                f"ИИ разложил {len(rules)} шт.{tail}, но правила не сохранены.")
+                f"ИИ разложил {len(fresh)} шт.{tail}, но правила не сохранены.")
             QMessageBox.warning(
                 self, "Правила не сохранены",
                 f"Ответ модели не удалось записать в overrides.json:\n{failure}\n\n"

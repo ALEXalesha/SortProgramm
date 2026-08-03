@@ -950,3 +950,64 @@ def test_scan_still_walks_real_folders_inside_managed_ones(tmp_path):
     found = scan(tmp_path, config, deep=True)
 
     assert [p.name for p in found] == ["клип.mp4"]
+
+
+# --- вынос 3D включён, а пути нет ---
+
+
+def write_rules(root):
+    """Минимальные правила рядом с config.json — иначе всё уедет в Others."""
+    (root / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Videos": ["mp4"], "3D": ["gcode"]},
+        "managed_folders": ["Медиа", "3D", "Others", "Videos", "Misc"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    }, ensure_ascii=False), encoding="utf-8")
+
+
+def test_3d_enabled_without_path_is_reported(tmp_path):
+    """Галочка «3D → отдельная папка» стоит, а путь пустой — и молчание.
+
+    `external_3d_path` на пустой строке отдаёт None, поэтому планировщик
+    ведёт себя ровно так, будто галочки нет: модели едут в обычные категории.
+    Снаружи это неотличимо от исправной работы — настройка включена, план
+    построен, жалоб нет. Ровно тот же исход, что у забытого `extensions`,
+    который здесь уже чинили: настройка выглядит рабочей, но не выносит ничего.
+    """
+    write_rules(tmp_path)
+    (tmp_path / "config.json").write_text(json.dumps({
+        "downloads_path": str(tmp_path / "dl"),
+        "external_3d": {"enabled": True, "path": ""},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(tmp_path / "config.json")
+
+    assert any("3D" in p and "путь" in p for p in config.problems), (
+        f"о включённом выносе без пути не сказано ни слова: {config.problems}")
+
+
+def test_3d_enabled_with_path_stays_quiet(tmp_path):
+    """Настроенный вынос 3D не должен ворчать на ровном месте."""
+    write_rules(tmp_path)
+    (tmp_path / "config.json").write_text(json.dumps({
+        "downloads_path": str(tmp_path / "dl"),
+        "external_3d": {"enabled": True, "path": str(tmp_path / "All_3d")},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(tmp_path / "config.json")
+
+    assert config.problems == []
+
+
+def test_3d_switched_off_without_path_stays_quiet(tmp_path):
+    """Выключенный вынос без пути — обычное дело, жаловаться не на что."""
+    write_rules(tmp_path)
+    (tmp_path / "config.json").write_text(json.dumps({
+        "downloads_path": str(tmp_path / "dl"),
+        "external_3d": {"enabled": False, "path": ""},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(tmp_path / "config.json")
+
+    assert config.problems == []

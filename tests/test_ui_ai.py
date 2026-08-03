@@ -6,6 +6,7 @@
 import json
 import os
 import time
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -229,3 +230,69 @@ def test_closing_window_waits_for_the_ai_request(live_worker_window):
 
     assert not live_worker_window._worker.isRunning(), (
         "окно закрылось, не дождавшись потока — Qt уронит процесс")
+
+
+def test_ai_counts_names_the_model_never_answered_about(window):
+    """«Без решения» считалось по ответу, а не по вопросу.
+
+    `_ai_done` видел только то, что вернулось, поэтому имена, про которые модель
+    промолчала (или ответила чужим ключом, и сверка его отбросила), не попадали
+    никуда: ни в правила, ни в счёт. Окно отчитывалось «ИИ разложил 1 шт.» —
+    и человек, спросивший про два файла и заплативший за оба, не узнавал, что
+    второй остался неразобранным.
+    """
+    window.run_ai()
+    assert window._ai_asked == 1, "проверка написана под один файл в корне"
+    window._ai_asked = 2  # как будто спрашивали про два имени
+
+    window._ai_done({"новый.mp4": "Медиа"})
+
+    assert "без решения: 1" in window.status.text(), (
+        f"молчание модели не посчитано: {window.status.text()!r}")
+
+
+def test_ai_does_not_overwrite_a_rule_made_by_hand(window):
+    """Ответ модели затирал правило, поставленное руками.
+
+    `overrides.update(...)` не спрашивает, было ли там что-то: решение, которое
+    человек принял сам, молча заменялось мнением модели. README разбирает ровно
+    этот случай — деталь `Puck_Launcher.step` модель уносит в «Игры» по слову
+    launcher, — и починить его руками можно было только до следующего нажатия
+    «✨ИИ». Отменить это нечем: у overrides.json истории нет.
+    """
+    window.config.overrides["новый.mp4"] = "Игры"
+
+    window._ai_done({"новый.mp4": "Медиа"})
+
+    assert window.config.overrides["новый.mp4"] == "Игры", (
+        "ИИ затёр правило, поставленное руками")
+    assert "сохранены: 1" in window.status.text(), (
+        f"о нетронутом правиле не сказано: {window.status.text()!r}")
+
+
+def test_ai_still_writes_rules_for_files_without_one(window):
+    """Файлы без правила ИИ по-прежнему разбирает."""
+    window.config.overrides["новый.mp4"] = "Игры"
+
+    window._ai_done({"новый.mp4": "Медиа", "старый.mp4": "Медиа"})
+
+    assert window.config.overrides["старый.mp4"] == "Медиа"
+    assert "ИИ разложил 1 шт." in window.status.text()
+
+
+def test_ai_asks_each_name_once(window, tmp_path):
+    """Одинаковые имена из разных папок уходили в запрос по разу на файл.
+
+    Ключ в overrides.json — имя без пути, поэтому второй `клип.mp4` не добавляет
+    вопросу ничего: ответ будет тот же и распространится на оба файла. Платить
+    за него дважды незачем, а счёт «спрашиваю по N именам» из-за повторов врал.
+    """
+    downloads = Path(window.config.downloads_path)
+    (downloads / "новый.mp4").write_text("x", encoding="utf-8")
+    (downloads / "Медиа" / "Videos" / "новый.mp4").write_text("x", encoding="utf-8")
+    window.resort.setChecked(True)
+
+    window.run_ai()
+
+    assert FakeWorker.seen.count("новый.mp4") == 1, (
+        f"одно имя ушло в запрос дважды: {FakeWorker.seen}")
