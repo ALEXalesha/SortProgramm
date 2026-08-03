@@ -34,12 +34,13 @@ class _AiWorker(QThread):
     failed = pyqtSignal(str)
     progress = pyqtSignal(int, int)
 
-    def __init__(self, filenames, categories, api_key, hints=None):
+    def __init__(self, filenames, categories, api_key, hints=None, fallback="Others"):
         super().__init__()
         self._filenames = filenames
         self._categories = categories
         self._api_key = api_key
         self._hints = hints or {}
+        self._fallback = fallback
 
     def run(self):
         try:
@@ -49,6 +50,7 @@ class _AiWorker(QThread):
                 self._api_key,
                 on_progress=lambda done, total: self.progress.emit(done, total),
                 hints=self._hints,
+                fallback=self._fallback,
             )
             self.done.emit(result)
         except Exception as exc:  # сеть, ключ, разбор — наружу как текст
@@ -435,7 +437,9 @@ class GlassWindow(QWidget):
 
     def open_downloads(self):
         path = self.path_edit.text().strip()
-        if not Path(path).is_dir():
+        # Пустая строка — это `Path(".")`, то есть папка самой программы: без
+        # первой половины проверки кнопка открывала именно её.
+        if not path or not Path(path).is_dir():
             QMessageBox.information(self, "Папка не найдена", "Укажи существующую папку.")
             return
         try:
@@ -489,9 +493,22 @@ class GlassWindow(QWidget):
             pass
 
     def run_ai(self):
+        """Спрашивает DeepSeek про то же, что разбирает обычная уборка.
+
+        Глубину задаёт галочка «Переразложить старое», как и у «🧹 Очистить».
+        Раньше кнопка всегда уходила вглубь, и на разобранной папке это било
+        дважды: запрос раздувался с десятка имён до тысячи, а правила для уже
+        разложенных файлов оседали в overrides.json и перетасовывали папки,
+        которые никто не просил трогать.
+
+        Пустое поле пути отбивается отдельно: `Path("")` — это текущая папка, и
+        `is_dir()` на ней отвечает True. Без этой проверки ИИ разбирал папку
+        самой программы — её имена уходили в DeepSeek, ответы записывались
+        правилами.
+        """
         self._sync_config()
         root = Path(self.config.downloads_path)
-        if not root.is_dir():
+        if not self.config.downloads_path or not root.is_dir():
             QMessageBox.information(self, "Папка не найдена", "Укажи существующую папку.")
             return
         key = ai.load_api_key(self.config_path.parent)
@@ -501,7 +518,8 @@ class GlassWindow(QWidget):
                 "Положи ключ в файл deepseek_key.txt рядом с программой\n"
                 "или задай переменную окружения DEEPSEEK_API_KEY.")
             return
-        files = scan(self.config.downloads_path, self.config, deep=True)
+        files = scan(
+            self.config.downloads_path, self.config, deep=self.resort.isChecked())
         names = [f.name for f in files]
         if not names:
             self.status.setText("Нечего разбирать.")
@@ -509,7 +527,9 @@ class GlassWindow(QWidget):
         cats = list(self.config.categories.keys()) + [self.config.fallback_category]
         self.ai_btn.setEnabled(False)
         self.status.setText(f"Спрашиваю DeepSeek по {len(names)} именам…")
-        self._worker = _AiWorker(names, cats, key, self.config.category_hints)
+        self._worker = _AiWorker(
+            names, cats, key, self.config.category_hints,
+            self.config.fallback_category)
         self._worker.done.connect(self._ai_done)
         self._worker.failed.connect(self._ai_failed)
         self._worker.progress.connect(self._ai_progress)
@@ -531,7 +551,10 @@ class GlassWindow(QWidget):
         skipped = len(mapping) - len(rules)
         tail = f" (без решения: {skipped})" if skipped else ""
         self.status.setText(f"ИИ разложил {len(rules)} шт.{tail}")
-        self.preview(deep=True)
+        # Глубина — та же, что была у запроса: план должен показывать ровно те
+        # файлы, про которые спрашивали. Жёсткое deep=True вытаскивало в план
+        # всё разложенное, хотя новые правила касались только корня.
+        self.preview()
 
     def _ai_failed(self, err):
         self.ai_btn.setEnabled(True)

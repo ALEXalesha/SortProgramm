@@ -28,6 +28,11 @@ def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
     if not root.is_dir():
         return found
 
+    # Куда уже заходили — по настоящему пути, а не по тому, каким пришли.
+    # Общий на весь обход: две управляемые папки могут оказаться стыками на
+    # одну и ту же настоящую папку.
+    visited = {_real(root)}
+
     # Прочитать папку может не выйти: права, отключённый сетевой диск, вынутая
     # флешка. Внутри управляемых папок этот случай уже обработан
     # (`_walk_managed`), и в корне он ничем не лучше — окно падать не должно.
@@ -41,12 +46,24 @@ def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
             if not _is_ignored(entry.name, config.ignore):
                 found.append(entry)
         elif deep and entry.is_dir() and entry.name in config.managed_folders:
-            found.extend(_walk_managed(entry, config))
+            found.extend(_walk_managed(entry, config, visited))
 
     return found
 
 
-def _walk_managed(folder: Path, config: Config) -> list[Path]:
+def _real(path: Path) -> Path:
+    """Настоящий путь папки: стыки и симлинки развёрнуты.
+
+    Не вышло развернуть (нет прав, отключился диск) — берём как есть: хуже
+    от этого не будет, а падать на ровном месте незачем.
+    """
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _walk_managed(folder: Path, config: Config, visited: set[Path]) -> list[Path]:
     """Файлы внутри управляемой папки. Вглубь — только по своим папкам.
 
     Своя папка — та, чьё имя есть в `managed_folders`: категория или тип. Всё
@@ -55,12 +72,26 @@ def _walk_managed(folder: Path, config: Config) -> list[Path]:
     бы файлы наверх и молча уничтожило порядок, который наводили руками.
 
     Правило то же, что и для корня: программа трогает только то, что создала.
+
+    `visited` хранит настоящие пути уже пройденных папок. Стык Windows
+    (junction) на папку-предка `iterdir` проходит как обычную папку, и обход
+    заворачивался в петлю: один файл попадал в список заново на каждом витке —
+    под путями `Медиа/Videos/Медиа/Videos/...`, — пока Windows не упирался в
+    предел длины пути. Все витки — один и тот же файл, поэтому план получался
+    такой: первое перемещение переименовывало лежащий на месте файл в
+    `клип (1).mp4`, следующее уже не находило его и падало, и так шесть
+    десятков раз. На последнем витке `is_dir()` не отвечал и сам стык уезжал
+    в список файлов — то есть переносилась целая папка.
     """
     managed = set(config.managed_folders)
     files: list[Path] = []
     stack = [folder]
     while stack:
         current = stack.pop()
+        real = _real(current)
+        if real in visited:
+            continue
+        visited.add(real)
         try:
             entries = list(current.iterdir())
         except OSError:

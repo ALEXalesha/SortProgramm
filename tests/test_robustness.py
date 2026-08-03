@@ -1,5 +1,8 @@
 """Устойчивость к испорченным файлам и странным настройкам."""
 import json
+import subprocess
+
+import pytest
 
 from sorter.config import Config
 from sorter.planner import build_plan
@@ -11,6 +14,14 @@ RULES = {"categories": {"Медиа": ["клип"]}, "managed_folders": ["Мед
 def write(path, text):
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def make_junction(link, target) -> bool:
+    """Стык Windows: прав администратора не требует, в отличие от symlink."""
+    done = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True)
+    return done.returncode == 0
 
 
 # --- испорченные файлы не мешают запуску ---
@@ -169,3 +180,35 @@ def test_external_3d_equal_to_downloads_plans_each_file_once(tmp_path):
 
     sources = [m.src for m in moves]
     assert len(sources) == len(set(sources)), f"файл запланирован дважды: {sources}"
+
+
+def test_junction_loop_inside_managed_folder_plans_file_once(tmp_path):
+    """Стык (junction) на папку-предка превращал один файл в 64 перемещения.
+
+    Обход управляемых папок шёл стеком без памяти о том, где уже был, а
+    `iterdir()` ходит сквозь стыки Windows как по обычным папкам. Файл
+    `Медиа/Videos/клип.mp4` попадал в список заново на каждом витке — под
+    путями `Медиа/Videos/Медиа/Videos/...` — пока Windows не упирался в предел
+    длины пути. Все витки — один и тот же файл, поэтому план получался такой:
+    первое перемещение переименовывало лежащий на месте файл в `клип (1).mp4`,
+    следующее — уже не находило его и падало, и так 63 раза.
+    """
+    downloads = tmp_path / "загрузки"
+    videos = downloads / "Медиа" / "Videos"
+    videos.mkdir(parents=True)
+    (videos / "клип.mp4").write_text("x", encoding="utf-8")
+    if not make_junction(videos / "Медиа", downloads / "Медиа"):
+        pytest.skip("стыки (junction) в этой системе не создаются")
+
+    cfg = Config(
+        downloads_path=str(downloads),
+        categories={"Медиа": ["клип"]},
+        type_map={"Videos": ["mp4"]},
+        managed_folders=["Медиа", "Videos", "Others", "Misc"],
+        fallback_category="Others",
+        fallback_type="Misc",
+    )
+
+    moves = build_plan(cfg, deep=True)
+
+    assert moves == [], f"файл уже на месте, а его двигают: {[m.dst.name for m in moves]}"

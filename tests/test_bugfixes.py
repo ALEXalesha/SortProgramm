@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from sorter.ai import load_api_key
+from sorter.ai import load_api_key, parse_ai_response, useful_rules
 from sorter.config import Config
 from sorter.classifier import explain_category, match_category, match_type
 from sorter.history import list_operations
@@ -548,6 +548,28 @@ def test_category_named_by_absolute_path_is_dropped(tmp_path):
 
     assert list(cfg.categories) == ["Медиа"]
     assert cfg.problems
+
+
+# --- запасная категория, переименованная в правилах ---
+
+
+def test_ai_unknown_category_falls_back_to_the_configured_name():
+    """Разбор ответа ИИ подставлял «Others» буквально, мимо настройки.
+
+    `fallback_category` в rules.json переименовывают — README прямо называет
+    его настраиваемым. Но выдумку модели («Музыка») разбор заменял строкой
+    «Others», а фильтр «не сохранять незнание» отсекает ответы по имени
+    запасной категории из конфига. Имена не совпадали, поэтому в overrides.json
+    уезжало правило `файл → Others`: категории с таким именем в правилах нет,
+    её нет и в `managed_folders`, значит папка `Загрузки/Others` больше никогда
+    не разбирается и не убирается. И это ещё правило с наивысшим приоритетом —
+    файлу закрыта дорога в любую новую категорию навсегда.
+    """
+    mapping = parse_ai_response(
+        '{"x.bin": "Музыка"}', ["Медиа", "Разное"], fallback="Разное")
+
+    assert mapping == {"x.bin": "Разное"}
+    assert useful_rules(mapping, "Разное") == {}
 
 
 # --- ключ ИИ, сохранённый в чужой кодировке ---

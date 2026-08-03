@@ -86,12 +86,23 @@ def _extract_json(content: str) -> str:
     return content[start:end + 1]
 
 
-def parse_ai_response(content: str, valid_categories: list[str]) -> dict[str, str]:
-    """Разбор ответа модели в мапу имя->категория. Неизвестная категория -> Others.
+def parse_ai_response(
+    content: str, valid_categories: list[str], fallback: str = "Others"
+) -> dict[str, str]:
+    """Разбор ответа модели в мапу имя->категория. Незнакомая категория -> fallback.
 
     Косую черту с конца имени убираем: в запрос она уходит как пометка «это
     папка», а в overrides.json ключом должно быть чистое имя — иначе правило
     никогда не совпадёт с реальной папкой.
+
+    Имя запасной категории берётся из правил, а не пишется здесь буквально.
+    Раньше выдумка модели превращалась в «Others» жёстко, а `useful_rules`
+    отсеивает незнание по имени из конфига. Стоило переименовать
+    `fallback_category` — имена расходились, и в overrides.json уезжало
+    правило `файл → Others`: категории с таким именем в правилах нет, в
+    `managed_folders` тоже, значит папка `Загрузки/Others` больше никогда не
+    разбирается и не убирается. Плюс правило имеет наивысший приоритет, то
+    есть закрывает файлу дорогу в любую новую категорию навсегда.
     """
     raw = _extract_json(content)
     if not raw:
@@ -110,7 +121,7 @@ def parse_ai_response(content: str, valid_categories: list[str]) -> dict[str, st
         key = name.rstrip("/")
         if not key:
             continue
-        result[key] = cat if cat in valid else "Others"
+        result[key] = cat if cat in valid else fallback
     return result
 
 
@@ -161,6 +172,7 @@ def classify_with_ai(
     base_url: str = DEFAULT_BASE_URL,
     timeout: int = 60,
     hints: dict[str, str] | None = None,
+    fallback: str = "Others",
 ) -> dict[str, str]:
     """Один запрос к DeepSeek. Мапа имя->категория (через parse_ai_response).
 
@@ -184,7 +196,7 @@ def classify_with_ai(
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         body = json.loads(resp.read().decode("utf-8"))
     content = body["choices"][0]["message"]["content"]
-    return parse_ai_response(content, categories)
+    return parse_ai_response(content, categories, fallback)
 
 
 def useful_rules(mapping: dict[str, str], fallback: str = "Others") -> dict[str, str]:
