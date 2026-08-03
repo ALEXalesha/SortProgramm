@@ -482,14 +482,22 @@ class GlassWindow(QWidget):
             self.table.setItem(r, 1, QTableWidgetItem(target))
         self.status.setText(f"План готов: {len(self.moves)} шт.")
 
-    def _save_overrides(self):
+    def _save_overrides(self) -> str:
+        """Пишет overrides.json. Возвращает текст ошибки или пустую строку.
+
+        Раньше OSError глотался целиком, и это худший вид молчания: правила
+        живут в памяти до закрытия окна, поэтому и план, и раскладка выглядят
+        как надо. Пропадает ответ ИИ уже потом — при следующем запуске, когда
+        связать пропажу с той кнопкой не с чем.
+        """
         path = self.config_path.with_name("overrides.json")
         try:
             path.write_text(
                 json.dumps(self.config.overrides, ensure_ascii=False, indent=2),
                 encoding="utf-8")
-        except OSError:
-            pass
+        except OSError as exc:
+            return str(exc)
+        return ""
 
     def run_ai(self):
         """Спрашивает DeepSeek про то же, что разбирает обычная уборка.
@@ -546,14 +554,28 @@ class GlassWindow(QWidget):
         # оно встало бы выше ключевых слов и закрыло файлу дорогу навсегда.
         rules = ai.useful_rules(mapping, self.config.fallback_category)
         self.config.overrides.update(rules)
-        self._save_overrides()
-        skipped = len(mapping) - len(rules)
-        tail = f" (без решения: {skipped})" if skipped else ""
-        self.status.setText(f"ИИ разложил {len(rules)} шт.{tail}")
+        failure = self._save_overrides()
         # Глубина — та же, что была у запроса: план должен показывать ровно те
         # файлы, про которые спрашивали. Жёсткое deep=True вытаскивало в план
         # всё разложенное, хотя новые правила касались только корня.
+        #
+        # План строится ДО отчёта: `preview` пишет в ту же строку состояния, и
+        # поставленный раньше итог она затирала молча — оба вызова идут внутри
+        # одного слота, окно между ними не перерисовывается. Других слов у
+        # кнопки ИИ нет, окон сообщений она не показывает, так что человек
+        # ждал запроса, платил за него и не узнавал о нём ничего.
         self.preview()
+        skipped = len(mapping) - len(rules)
+        tail = f" (без решения: {skipped})" if skipped else ""
+        self.status.setText(f"ИИ разложил {len(rules)} шт.{tail}")
+        if failure:
+            self.status.setText(
+                f"ИИ разложил {len(rules)} шт.{tail}, но правила не сохранены.")
+            QMessageBox.warning(
+                self, "Правила не сохранены",
+                f"Ответ модели не удалось записать в overrides.json:\n{failure}\n\n"
+                "Пока окно открыто, правила действуют, но после закрытия "
+                "пропадут — запрос придётся повторить.")
 
     def _ai_failed(self, err):
         self.ai_btn.setEnabled(True)
@@ -598,13 +620,17 @@ class GlassWindow(QWidget):
             return
         result = apply(self.moves, self.config, dry_run=False)
         self._save_settings()
+        # Сначала новый план, потом итог: `preview` пишет в ту же строку
+        # состояния, и поставленный раньше «Перемещено: 7» она затирала на
+        # «План готов: 0 шт.». Последнее слово должно оставаться за тем, что
+        # только что произошло с файлами.
+        self.preview()
         # В строку статуса — короткий итог, в окно — полный отчёт с именами.
         # Само число ошибок ни о чём не говорит: какой файл не переехал и
         # почему, видно только из списка (`util.report`).
         self.status.setText(f"Перемещено: {result.moved}, ошибок: {len(result.errors)}")
         (QMessageBox.warning if result.errors or result.notes
          else QMessageBox.information)(self, "Готово", report(result))
-        self.preview()
 
 
 def launch(config_path: Path) -> None:

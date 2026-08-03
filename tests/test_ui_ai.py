@@ -131,6 +131,58 @@ def test_ai_does_nothing_when_folder_field_is_empty(window):
     assert FakeWorker.seen is None
 
 
+def test_ai_result_survives_the_plan_it_rebuilds(window):
+    """Итог работы ИИ показывался и тут же затирался — увидеть его было нельзя.
+
+    `_ai_done` писал «ИИ разложил N шт.» в строку состояния, а следом звал
+    `preview()`, который пишет туда же «План готов: N шт.». Оба вызова идут
+    внутри одного слота, между ними окно не перерисовывается, поэтому итог не
+    успевал появиться на экране ни на кадр.
+
+    Другого канала у ИИ нет: окна сообщений он не показывает, в отличие от
+    «Применить». То есть человек нажимал кнопку, ждал запроса, платил за него —
+    и не узнавал ни сколько правил записано, ни сколько имён модель оставила
+    без решения. Последнее слово должно оставаться за тем, ради чего кнопку и
+    нажимали.
+    """
+    window._ai_done({"новый.mp4": "Медиа"})
+
+    assert "ИИ" in window.status.text(), (
+        f"итог ИИ затёрт планом: {window.status.text()!r}")
+    assert "1" in window.status.text()
+
+
+def test_ai_says_how_many_names_were_left_without_a_decision(window):
+    """«Не знаю» от модели правилом не пишется — но сказать об этом надо."""
+    window._ai_done({"новый.mp4": "Медиа", "старый.mp4": "Others"})
+
+    assert "без решения: 1" in window.status.text()
+
+
+def test_ai_rules_that_could_not_be_saved_are_not_passed_over_in_silence(
+        window, tmp_path, monkeypatch):
+    """Ответ ИИ не записался в overrides.json, и окно об этом молчало.
+
+    Файл держит открытым редактор, папка только на чтение, кончилось место,
+    диск сняли — `_save_overrides` глотал OSError целиком. Снаружи всё выглядело
+    как удачный разбор: правила есть, план перестроен, плана и правил хватает до
+    закрытия окна. А после закрытия ответ, за который заплачено, исчезал, и
+    следующий запуск начинал с чистого листа — без единого слова о том, что
+    что-то пошло не так.
+    """
+    said = []
+    monkeypatch.setattr(
+        ui_qt.QMessageBox, "warning",
+        staticmethod(lambda parent, title, text, *a, **k: said.append((title, text))))
+    # Папка вместо файла: запись обязана упасть на любой системе.
+    (tmp_path / "overrides.json").mkdir()
+
+    window._ai_done({"новый.mp4": "Медиа"})
+
+    assert said, "правила не сохранились, а окно промолчало"
+    assert "новый.mp4" in window.config.overrides, "правило должно жить хотя бы в памяти"
+
+
 @pytest.fixture
 def live_worker_window(app, tmp_path, monkeypatch):
     """То же окно, но с настоящим `_AiWorker`: нужен живой фоновый поток."""

@@ -147,6 +147,9 @@ class SorterApp:
             return
 
         result = apply(self.moves, self.config, dry_run=False)
+        # Сначала новый план, потом итог: `preview` пишет в ту же строку
+        # состояния и затирала бы «Перемещено: 7» на «План готов: 0 шт.».
+        self.preview()
         # В строку статуса — короткий итог, в окно — полный отчёт с именами:
         # одно лишь число ошибок не говорит, какой файл остался в загрузках и
         # почему. Текст общий с окном PyQt и консолью (`util.report`).
@@ -155,7 +158,6 @@ class SorterApp:
             messagebox.showwarning("Готово с оговорками", report(result))
         else:
             messagebox.showinfo("Готово", report(result))
-        self.preview()
 
 
 def launch(config_path: Path) -> None:

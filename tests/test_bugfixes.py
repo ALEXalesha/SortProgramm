@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from sorter.ai import load_api_key, parse_ai_response, useful_rules
 from sorter.config import Config
 from sorter.classifier import explain_category, match_category, match_type
@@ -888,3 +890,63 @@ def test_undo_stays_quiet_when_everything_came_back(tmp_path):
     ]), encoding="utf-8")
 
     assert undo(log) == []
+
+
+# --- сломанная ссылка внутри папки программы ---
+
+
+def broken_link(path):
+    """Ссылка в никуда. Пропускает тест, если система их не даёт создавать."""
+    try:
+        path.symlink_to(path.parent / "нет-такой-папки", target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"символические ссылки недоступны: {exc}")
+    return path
+
+
+def test_scan_skips_broken_link_inside_managed_folder(tmp_path):
+    """Битая ссылка внутри своей папки уезжала в план как обычный файл.
+
+    Корень загрузок отбирает файлы по `is_file()`, а обход управляемых папок
+    проверял только «это не папка» — и всё, что не ответило `is_dir()`,
+    записывал в файлы. Оборванный ярлык на снятую флешку, ссылка на удалённую
+    папку, стык на путь длиннее предела Windows: `is_dir()` у всех False,
+    `is_file()` тоже False.
+
+    Дальше такая запись доезжала до плана, а `apply` спотыкался о неё каждый
+    раз — «нет файла» в отчёте, и так при любой уборке. Убрать её из отчёта
+    было нельзя ничем, кроме как найти и удалить ссылку руками, а имя в
+    списке ошибок выглядело как настоящая потеря файла.
+
+    Ровно тот же случай описан в `_walk_managed` про стык Windows: на
+    последнем витке `is_dir()` не отвечал, и стык уезжал в список файлов.
+    Петлю тогда починили, а вход в список файлов остался открытым.
+    """
+    config = make_config(tmp_path)
+    touch(tmp_path / "Медиа" / "Videos" / "живой.mp4")
+    broken_link(tmp_path / "Медиа" / "Videos" / "битая")
+
+    found = scan(tmp_path, config, deep=True)
+
+    assert [p.name for p in found] == ["живой.mp4"]
+
+
+def test_broken_link_inside_managed_folder_does_not_become_an_error(tmp_path):
+    """Та же ссылка не должна превращаться в ошибку «нет файла» при уборке."""
+    config = make_config(tmp_path)
+    touch(tmp_path / "Медиа" / "Videos" / "клип.mp4")
+    broken_link(tmp_path / "Медиа" / "Videos" / "битая")
+
+    result = apply(build_plan(config, deep=True), config, dry_run=False)
+
+    assert result.errors == []
+
+
+def test_scan_still_walks_real_folders_inside_managed_ones(tmp_path):
+    """Проверка на файл не должна закрыть обход настоящих подпапок."""
+    config = make_config(tmp_path)
+    touch(tmp_path / "Медиа" / "Videos" / "клип.mp4")
+
+    found = scan(tmp_path, config, deep=True)
+
+    assert [p.name for p in found] == ["клип.mp4"]

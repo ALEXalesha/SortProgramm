@@ -82,6 +82,14 @@ def _walk_managed(folder: Path, config: Config, visited: set[Path]) -> list[Path
     `клип (1).mp4`, следующее уже не находило его и падало, и так шесть
     десятков раз. На последнем витке `is_dir()` не отвечал и сам стык уезжал
     в список файлов — то есть переносилась целая папка.
+
+    Файлом считается только то, что отвечает `is_file()`, — ровно как в корне.
+    Раньше сюда попадало всё, что не ответило `is_dir()`, а это не одно и то
+    же: у оборванного ярлыка, ссылки на удалённую папку и стыка на путь длиннее
+    предела Windows обе проверки дают False. Такая запись доезжала до плана, и
+    `apply` спотыкался о неё при каждой уборке — «нет файла» в отчёте, имя в
+    списке ошибок как настоящая потеря, и убрать её оттуда можно было только
+    руками через проводник.
     """
     managed = set(config.managed_folders)
     files: list[Path] = []
@@ -100,6 +108,6 @@ def _walk_managed(folder: Path, config: Config, visited: set[Path]) -> list[Path
             if entry.is_dir():
                 if entry.name in managed:
                     stack.append(entry)
-            elif not _is_ignored(entry.name, config.ignore):
+            elif entry.is_file() and not _is_ignored(entry.name, config.ignore):
                 files.append(entry)
     return sorted(files)
