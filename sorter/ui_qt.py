@@ -41,6 +41,11 @@ class _AiWorker(QThread):
         self._api_key = api_key
         self._hints = hints or {}
         self._fallback = fallback
+        self._stopped = False
+
+    def stop(self):
+        """Просит бросить остаток списка. Запрос в полёте не прерывает."""
+        self._stopped = True
 
     def run(self):
         try:
@@ -49,6 +54,7 @@ class _AiWorker(QThread):
                 self._categories,
                 self._api_key,
                 on_progress=lambda done, total: self.progress.emit(done, total),
+                should_stop=lambda: self._stopped,
                 hints=self._hints,
                 fallback=self._fallback,
             )
@@ -556,7 +562,26 @@ class GlassWindow(QWidget):
 
     def closeEvent(self, e):
         self._save_settings()
+        self._stop_ai()
         super().closeEvent(e)
+
+    def _stop_ai(self):
+        """Дожидается фонового запроса к ИИ, если он ещё идёт.
+
+        `_AiWorker` — это `QThread`, а Qt обрывает процесс, если объект потока
+        уничтожается на ходу. Окно держит поток полем, поэтому цепочка была
+        короткая: нажал «✨ИИ» на большой папке, передумал, закрыл окно — и
+        вместо тихого выхода Windows показывал падение. Настройки к тому
+        моменту уже сохранены, но выглядит это как поломка на ровном месте.
+
+        Сначала просим бросить остаток списка, потом ждём. Запрос в полёте не
+        прервать — там сидит `urlopen`, — но дольше одного таймаута ожидание
+        не затянется, а обычно поток уходит сразу.
+        """
+        worker = getattr(self, "_worker", None)
+        if worker is not None and worker.isRunning():
+            worker.stop()
+            worker.wait()
 
     def do_apply(self):
         if not self.moves:

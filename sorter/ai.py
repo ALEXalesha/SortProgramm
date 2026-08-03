@@ -87,7 +87,10 @@ def _extract_json(content: str) -> str:
 
 
 def parse_ai_response(
-    content: str, valid_categories: list[str], fallback: str = "Others"
+    content: str,
+    valid_categories: list[str],
+    fallback: str = "Others",
+    requested: list[str] | None = None,
 ) -> dict[str, str]:
     """Разбор ответа модели в мапу имя->категория. Незнакомая категория -> fallback.
 
@@ -103,6 +106,19 @@ def parse_ai_response(
     `managed_folders` тоже, значит папка `Загрузки/Others` больше никогда не
     разбирается и не убирается. Плюс правило имеет наивысший приоритет, то
     есть закрывает файлу дорогу в любую новую категорию навсегда.
+
+    `requested` — имена, про которые спрашивали. Промт просит повторять ключ
+    символ в символ, и это правило модель нарушает регулярно: приводит имя к
+    нижнему регистру, теряет служебный номер, дописывает файлы, которых ей не
+    присылали. Оба исхода плохи по-своему. Ключ не тем регистром не совпадёт
+    ни с одним файлом — правило мёртвое, а окно всё равно отчитается «ИИ
+    разложил N шт.»: счёт врёт, файл остался неразобранным, и понять это
+    неоткуда. Выдуманное имя оседает в overrides.json навсегда, и стоит
+    такому файлу однажды появиться в загрузках, он поедет по решению,
+    принятому вслепую про другую папку. Поэтому ответ сверяется со списком:
+    чужое отбрасываем, своё возвращаем в том написании, в каком спрашивали.
+    Списка нет (разбор из тестов, ручной вызов) — сверять не с чем, берём как
+    есть.
     """
     raw = _extract_json(content)
     if not raw:
@@ -114,6 +130,9 @@ def parse_ai_response(
     if not isinstance(data, dict):
         return {}
     valid = set(valid_categories)
+    asked = None
+    if requested is not None:
+        asked = {n.rstrip("/").lower(): n.rstrip("/") for n in requested}
     result: dict[str, str] = {}
     for name, cat in data.items():
         if not isinstance(name, str) or not isinstance(cat, str):
@@ -121,6 +140,10 @@ def parse_ai_response(
         key = name.rstrip("/")
         if not key:
             continue
+        if asked is not None:
+            key = asked.get(key.lower())
+            if key is None:
+                continue
         result[key] = cat if cat in valid else fallback
     return result
 
@@ -196,7 +219,7 @@ def classify_with_ai(
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         body = json.loads(resp.read().decode("utf-8"))
     content = body["choices"][0]["message"]["content"]
-    return parse_ai_response(content, categories, fallback)
+    return parse_ai_response(content, categories, fallback, requested=filenames)
 
 
 def useful_rules(mapping: dict[str, str], fallback: str = "Others") -> dict[str, str]:
@@ -220,6 +243,7 @@ def classify_many(
     api_key: str,
     batch_size: int = BATCH_SIZE,
     on_progress=None,
+    should_stop=None,
     classifier=classify_with_ai,
     **kwargs,
 ) -> dict[str, str]:
@@ -230,12 +254,17 @@ def classify_many(
     ошибка на весь список из-за одного таймаута.
 
     on_progress(готово, всего) — для полоски прогресса в интерфейсе.
+    should_stop() — «хватит»: окно закрывают, и ждать оставшиеся пачки незачем.
+    Спрашиваем между пачками, потому что запрос в полёте не прервать; дольше
+    одного таймаута ожидание всё равно не затянется.
     classifier подменяется в тестах, чтобы не ходить в сеть.
     """
     batches = batched(filenames, batch_size)
     result: dict[str, str] = {}
     failures: list[Exception] = []
     for index, batch in enumerate(batches, start=1):
+        if should_stop and should_stop():
+            break
         try:
             result.update(classifier(batch, categories, api_key, **kwargs))
         except Exception as exc:

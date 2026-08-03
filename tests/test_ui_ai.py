@@ -5,6 +5,7 @@
 """
 import json
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -128,3 +129,51 @@ def test_ai_does_nothing_when_folder_field_is_empty(window):
     window.run_ai()
 
     assert FakeWorker.seen is None
+
+
+@pytest.fixture
+def live_worker_window(app, tmp_path, monkeypatch):
+    """То же окно, но с настоящим `_AiWorker`: нужен живой фоновый поток."""
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "новый.mp4").write_text("x", encoding="utf-8")
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"downloads_path": str(downloads)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(
+        json.dumps({
+            "categories": {"Медиа": ["клип"]},
+            "type_map": {"Videos": ["mp4"]},
+            "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+            "fallback_category": "Others",
+            "fallback_type": "Misc",
+        }, ensure_ascii=False),
+        encoding="utf-8")
+
+    monkeypatch.setattr(ui_qt.ai, "load_api_key", lambda base: "sk-test")
+    monkeypatch.setattr(ui_qt.QMessageBox, "information", lambda *a, **k: None)
+    monkeypatch.setattr(ui_qt.QMessageBox, "warning", lambda *a, **k: None)
+    # Вместо сети — задержка: поток должен быть ещё жив к моменту закрытия.
+    monkeypatch.setattr(ui_qt.ai, "classify_many", lambda *a, **k: time.sleep(0.5) or {})
+
+    win = ui_qt.GlassWindow(tmp_path / "config.json")
+    yield win
+    win.deleteLater()
+
+
+def test_closing_window_waits_for_the_ai_request(live_worker_window):
+    """Закрытие окна во время запроса к ИИ убивало процесс целиком.
+
+    `_AiWorker` — это `QThread`, и Qt обрывает процесс (`abort`), если объект
+    потока уничтожается на ходу. Окно держит поток полем, поэтому цепочка
+    получалась короткая: нажал «✨ИИ» на большой папке, передумал, закрыл окно —
+    и вместо тихого выхода Windows показывал падение. Настройки к тому моменту
+    уже сохранены, но ответ модели, за который заплачено, пропадал молча.
+    """
+    live_worker_window.run_ai()
+    assert live_worker_window._worker.isRunning()
+
+    live_worker_window.close()
+
+    assert not live_worker_window._worker.isRunning(), (
+        "окно закрылось, не дождавшись потока — Qt уронит процесс")

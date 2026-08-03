@@ -73,7 +73,9 @@ def test_log_with_strange_entries_does_not_break_history(tmp_path):
 
     assert len(ops) == 1
     assert ops[0].entries == [{"src": "a", "dst": "b"}], "мусор надо отсеять"
-    assert history.undo_operation(ops[0]) == []
+    # Путь «b» никуда не ведёт: откат не падает и говорит, что возвращать нечего.
+    notes = history.undo_operation(ops[0])
+    assert [path for path, _ in notes] == ["b"]
 
 
 def test_undo_keeps_log_when_file_did_not_return(tmp_path):
