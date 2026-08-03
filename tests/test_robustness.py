@@ -8,7 +8,14 @@ from sorter.config import Config
 from sorter.planner import build_plan
 
 USER = {"downloads_path": "X:/загрузки"}
-RULES = {"categories": {"Медиа": ["клип"]}, "managed_folders": ["Медиа"]}
+# `managed_folders` перечисляет и запасные папки: файл уезжает в
+# `Загрузки/Категория/Тип`, поэтому своими должны быть и `Others`, и `Misc` —
+# иначе «Переразложить старое» в них не зайдёт, а пустыми их никто не уберёт.
+# Раньше этих двух строк тут не было, и «здоровый» конфиг здоровым не являлся.
+RULES = {
+    "categories": {"Медиа": ["клип"]},
+    "managed_folders": ["Медиа", "Others", "Misc"],
+}
 
 
 def write(path, text):

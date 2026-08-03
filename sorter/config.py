@@ -210,6 +210,50 @@ def _text(raw, default: str, where: str, key: str, problems: list[str]) -> str:
     return raw
 
 
+def _check_managed(
+    categories: list[str],
+    types: list[str],
+    managed: list[str],
+    where: str,
+    problems: list[str],
+) -> None:
+    """Жалуется на категории и типы, которых нет в `managed_folders`.
+
+    Файл уезжает в `Загрузки/Категория/Тип`, но обратно программа заходит
+    только в свои папки — те, чьё имя есть в `managed_folders`. Категория, эту
+    строку не получившая, работает ровно один раз: файлы в неё складываются
+    нормально, а дальше папка становится чёрной дырой. «Переразложить старое»
+    её не видит, значит новые правила к лежащему внутри уже не применятся
+    никогда. Опустевшей её тоже никто не уберёт.
+
+    Заметить это невозможно: раскладка выглядит правильной, жалоб нет, а
+    последствия вылезают через месяц и совсем в другом месте. Ровно этот исход
+    README разбирает на переименованной `fallback_category` — там его починили
+    поимённо, а общей проверки не было. Правила README предлагает править
+    руками, и забыть вторую строку при добавлении категории — самая обычная
+    ошибка: `categories` и `managed_folders` лежат в файле далеко друг от друга.
+
+    Вложенная категория (`Учёба/2026`) — это две папки, и обход спускается по
+    ним по очереди, поэтому нужны обе. Пустой `managed_folders` не трогаем: там
+    ничего не забыли, там просто не пользуются разрешённым списком, и жалоба на
+    каждую категорию завалила бы окно шумом.
+    """
+    if not managed:
+        return
+    known = set(managed)
+    seen: set[str] = set()
+    for kind, names in (("категория", categories), ("тип", types)):
+        for name in names:
+            for part in _SEPARATORS.split(name):
+                if not part or part in known or part in seen:
+                    continue
+                seen.add(part)
+                problems.append(
+                    f"{where}: {kind} «{part}» не указана в managed_folders. "
+                    "Файлы в неё разложатся, но «Переразложить старое» в эту "
+                    "папку больше не зайдёт и пустой её не уберёт.")
+
+
 @dataclass
 class Config:
     downloads_path: str
@@ -265,25 +309,45 @@ class Config:
         overrides_name = path.with_name(OVERRIDES_FILENAME).name
         skip = USER_KEYS if inline_rules else RULE_KEYS + USER_KEYS
 
+        # Разделы разбираются по порядку: жалобы в `problems` должны идти в том
+        # же порядке, в каком они лежат в файле, — так их проще искать глазами.
+        categories = _rule_map(rules.get("categories"), rules_name, "categories", problems)
+        patterns = _rule_map(rules.get("patterns"), rules_name, "patterns", problems)
+        category_hints = _text_map(
+            rules.get("category_hints"), rules_name, "category_hints", problems)
+        type_map = _rule_map(rules.get("type_map"), rules_name, "type_map", problems)
+        managed_folders = _text_list(
+            rules.get("managed_folders"), rules_name, "managed_folders", problems)
+        ignore = _text_list(rules.get("ignore"), rules_name, "ignore", problems)
+        overrides = _text_map(
+            _read_json(path.with_name(OVERRIDES_FILENAME), problems),
+            overrides_name, "правила", problems, folders=True)
+        external_3d = _clean_3d(data.get("external_3d"), problems)
+        fallback_category = _text(
+            rules.get("fallback_category"), "Others",
+            rules_name, "fallback_category", problems)
+        fallback_type = _text(
+            rules.get("fallback_type"), "Misc", rules_name, "fallback_type", problems)
+
+        # Папку создаёт любая категория, откуда бы она ни пришла: из правил, из
+        # шаблона, из ручной записи в overrides.json или из запасной строки.
+        _check_managed(
+            [*categories, *patterns, *overrides.values(), fallback_category],
+            [*type_map, fallback_type],
+            managed_folders, rules_name, problems)
+
         return cls(
             downloads_path=downloads,
-            categories=_rule_map(rules.get("categories"), rules_name, "categories", problems),
-            patterns=_rule_map(rules.get("patterns"), rules_name, "patterns", problems),
-            category_hints=_text_map(
-                rules.get("category_hints"), rules_name, "category_hints", problems),
-            type_map=_rule_map(rules.get("type_map"), rules_name, "type_map", problems),
-            managed_folders=_text_list(
-                rules.get("managed_folders"), rules_name, "managed_folders", problems),
-            ignore=_text_list(rules.get("ignore"), rules_name, "ignore", problems),
-            overrides=_text_map(
-                _read_json(path.with_name(OVERRIDES_FILENAME), problems),
-                overrides_name, "правила", problems, folders=True),
-            external_3d=_clean_3d(data.get("external_3d"), problems),
-            fallback_category=_text(
-                rules.get("fallback_category"), "Others",
-                rules_name, "fallback_category", problems),
-            fallback_type=_text(
-                rules.get("fallback_type"), "Misc", rules_name, "fallback_type", problems),
+            categories=categories,
+            patterns=patterns,
+            category_hints=category_hints,
+            type_map=type_map,
+            managed_folders=managed_folders,
+            ignore=ignore,
+            overrides=overrides,
+            external_3d=external_3d,
+            fallback_category=fallback_category,
+            fallback_type=fallback_type,
             extra={k: v for k, v in data.items() if k not in skip},
             problems=problems,
         )

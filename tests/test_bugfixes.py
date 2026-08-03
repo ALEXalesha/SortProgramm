@@ -6,9 +6,10 @@ from sorter.ai import load_api_key, parse_ai_response, useful_rules
 from sorter.config import Config
 from sorter.classifier import explain_category, match_category, match_type
 from sorter.history import list_operations
-from sorter.mover import apply, undo
+from sorter.mover import apply, undo, Result
 from sorter.planner import build_plan, Move
 from sorter.scanner import scan
+from sorter.util import report
 
 
 def make_config(root):
@@ -618,3 +619,196 @@ def test_env_key_still_wins_over_file(tmp_path, monkeypatch):
     (tmp_path / "deepseek_key.txt").write_text("sk-from-file", encoding="utf-8")
 
     assert load_api_key(tmp_path) == "sk-from-env"
+
+
+# --- отчёт о применении: какие файлы не переехали ---
+
+
+def test_report_names_files_that_did_not_move():
+    """Окно сообщало только число ошибок, а не то, какие файлы и почему.
+
+    «Перемещено: 7, ошибок: 3» — и всё. Какие три, что с ними, повторять ли
+    попытку, узнать было неоткуда: в консоль такой запуск ничего не пишет, а
+    список ошибок `Result.errors` до человека не доезжал. CLI печатает каждую
+    строку давно — окно должно говорить то же самое.
+    """
+    result = Result(
+        planned=2, moved=1,
+        errors=[(r"C:\Загрузки\клип.mp4", "нет файла: C:\\Загрузки\\клип.mp4")])
+
+    text = report(result)
+
+    assert "клип.mp4" in text, "надо назвать файл, а не только посчитать"
+    assert "нет файла" in text, "надо сказать причину"
+
+
+def test_report_keeps_both_errors_and_notes():
+    """Оговорки показывались, ошибки — нет. Нужны обе половины сразу."""
+    result = Result(
+        planned=2, moved=1,
+        errors=[("клип.mp4", "занят другой программой")],
+        notes=[("отчёт.pdf", "в цели уже есть «отчёт.pdf»")])
+
+    text = report(result)
+
+    assert "занят другой программой" in text
+    assert "в цели уже есть" in text
+
+
+def test_report_stays_short_when_everything_moved():
+    """Когда всё прошло гладко, лишних разделов в отчёте быть не должно."""
+    assert report(Result(planned=1, moved=1)) == "Перемещено: 1, ошибок: 0"
+
+
+# --- категория, которую забыли в managed_folders ---
+
+
+def _write_rules(tmp_path, rules):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(
+        json.dumps(rules, ensure_ascii=False), encoding="utf-8")
+    return tmp_path / "config.json"
+
+
+def test_category_missing_from_managed_folders_is_reported(tmp_path):
+    """Категория без записи в `managed_folders` — чёрная дыра, и молча.
+
+    Файлы в такую папку уезжают нормально, а обратно программа в неё уже не
+    заходит: `scan` обходит только своё, и «Переразложить старое» эту папку не
+    видит. Опустевшей её тоже никто не уберёт. То есть новая категория
+    применяется ровно один раз, а дальше файлы в ней заморожены навсегда —
+    именно этот исход README называет худшим, разбирая переименованную
+    `fallback_category`. Проверка на путь вместо имени уже есть, а на забытую
+    строку в `managed_folders` — не было ни одной жалобы.
+    """
+    cfg_path = _write_rules(tmp_path, {
+        "categories": {"Медиа": ["клип"], "Рецепты": ["борщ"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    })
+
+    cfg = Config.load(cfg_path)
+
+    assert any("Рецепты" in p for p in cfg.problems)
+    assert cfg.categories["Рецепты"] == ["борщ"], "правило работает, просто с жалобой"
+
+
+def test_type_missing_from_managed_folders_is_reported(tmp_path):
+    """Тип — такая же папка, как категория: `Категория/Тип/файл`."""
+    cfg_path = _write_rules(tmp_path, {
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Videos": ["mp4"], "Книги": ["fb2"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    })
+
+    cfg = Config.load(cfg_path)
+
+    assert any("Книги" in p for p in cfg.problems)
+
+
+def test_fallback_category_missing_from_managed_folders_is_reported(tmp_path):
+    """Запасная папка собирает весь неопознанный хвост — её забыть больнее всего."""
+    cfg_path = _write_rules(tmp_path, {
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Misc"],
+        "fallback_category": "Прочее",
+        "fallback_type": "Misc",
+    })
+
+    cfg = Config.load(cfg_path)
+
+    assert any("Прочее" in p for p in cfg.problems)
+
+
+def test_override_category_missing_from_managed_folders_is_reported(tmp_path):
+    """Правило из overrides.json создаёт папку так же, как правило из rules.json."""
+    _write_rules(tmp_path, {
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    })
+    (tmp_path / "overrides.json").write_text(
+        json.dumps({"смета.mp4": "Работа"}, ensure_ascii=False), encoding="utf-8")
+
+    cfg = Config.load(tmp_path / "config.json")
+
+    assert any("Работа" in p for p in cfg.problems)
+
+
+def test_full_managed_folders_stay_silent(tmp_path):
+    """Полный список жалоб не вызывает — иначе предупреждение обесценится."""
+    cfg_path = _write_rules(tmp_path, {
+        "categories": {"Медиа": ["клип"]},
+        "patterns": {"Медиа": [r"^\d{4}\.mp4$"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    })
+
+    assert Config.load(cfg_path).problems == []
+
+
+def test_empty_managed_folders_is_not_nagged_about(tmp_path):
+    """Списка нет вовсе — это не «забыли строку», а другой способ настройки.
+
+    Жаловаться на каждую категорию в таком конфиге значит завалить окно
+    предупреждениями там, где человек ничего не забывал.
+    """
+    cfg_path = _write_rules(tmp_path, {
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Videos": ["mp4"]},
+    })
+
+    assert Config.load(cfg_path).problems == []
+
+
+# --- пустые папки расширений во внешней папке 3D ---
+
+
+def test_undo_removes_extension_folder_it_emptied_in_3d(tmp_path):
+    """Откат убирал каркас в загрузках, но не во внешней папке 3D.
+
+    Подпапки с именем расширения (`All_3d/gcode`) создаёт сама программа, и
+    после отката они оставались пустыми навсегда: в `managed_folders` таких
+    имён нет, а чистка смотрит только туда. Получалась ровно та половина
+    отмены, из-за которой уборку за откатом и добавили.
+    """
+    downloads = tmp_path / "Загрузки"
+    all_3d = tmp_path / "All_3d"
+    all_3d.mkdir()
+    cfg = make_config(downloads)
+    cfg.external_3d = {"enabled": True, "path": str(all_3d), "extensions": ["gcode"]}
+    touch(downloads / "деталь.gcode")
+    result = apply(build_plan(cfg, send_3d_external=True), cfg, dry_run=False)
+    assert (all_3d / "gcode" / "деталь.gcode").is_file()
+
+    undo(result.undo_log, cfg)
+
+    assert (downloads / "деталь.gcode").is_file()
+    assert not (all_3d / "gcode").exists(), "пустая папка расширения осталась"
+    assert all_3d.is_dir(), "саму внешнюю папку 3D трогать нельзя"
+
+
+def test_cleanup_keeps_3d_folder_that_still_has_files(tmp_path):
+    """Непустую подпапку расширения чистка не трогает."""
+    downloads = tmp_path / "Загрузки"
+    all_3d = tmp_path / "All_3d"
+    all_3d.mkdir()
+    cfg = make_config(downloads)
+    cfg.external_3d = {"enabled": True, "path": str(all_3d), "extensions": ["gcode"]}
+    touch(downloads / "деталь.gcode")
+    result = apply(build_plan(cfg, send_3d_external=True), cfg, dry_run=False)
+    touch(all_3d / "gcode" / "чужое.gcode")
+
+    undo(result.undo_log, cfg)
+
+    assert (all_3d / "gcode" / "чужое.gcode").is_file()

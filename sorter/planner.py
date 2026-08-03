@@ -44,8 +44,12 @@ def _dedup(dst: Path, taken: set[Path]) -> Path:
         i += 1
 
 
-def _external_3d_path(config: Config) -> Path | None:
-    """Путь внешней папки 3D (All_3d), если он задан в конфиге."""
+def external_3d_path(config: Config) -> Path | None:
+    """Путь внешней папки 3D (All_3d), если он задан в конфиге.
+
+    Нужен не только планировщику: чистка пустых папок (`mover`) тоже должна
+    знать, где кончается своё и начинается чужое.
+    """
     if not isinstance(config.external_3d, dict):
         return None
     raw = config.external_3d.get("path", "")
@@ -80,7 +84,7 @@ def plan(
     """
     root = Path(config.downloads_path)
     ext_3d = _external_3d_extensions(config)
-    external_path = _external_3d_path(config)
+    external_path = external_3d_path(config)
 
     moves: list[Move] = []
     if taken is None:
@@ -116,7 +120,7 @@ def plan_3d_folder(
     Каждый файл едет в All_3d/<расширение>/имя (part.gcode → All_3d/gcode/part.gcode).
     Файлы без расширения оставляем на месте. ИИ здесь не нужен — только расширение.
     """
-    external_path = _external_3d_path(config)
+    external_path = external_3d_path(config)
     if external_path is None:
         return []
 
@@ -164,7 +168,7 @@ def build_plan(
     downloads = scan(config.downloads_path, config, deep=deep)
     moves = plan(downloads, config, send_3d_external=send_3d_external, taken=taken)
 
-    external_path = _external_3d_path(config)
+    external_path = external_3d_path(config)
     if external_path is not None:
         # Если All_3d указывает на саму папку загрузок, второй скан вернёт те же
         # файлы. Без этого фильтра один файл попал бы в план дважды: первое

@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import Config
-from .planner import Move
+from .planner import Move, external_3d_path
 
 
 @dataclass
@@ -89,12 +89,25 @@ def _cleanup_emptied(performed: list[dict[str, str]], config: Config) -> None:
     папку с подходящим именем, даже если пользователь создал её сам и программа
     к ней не прикасалась. Теперь отталкиваемся от того, откуда реально уносили
     файлы, и поднимаемся вверх, пока папки пустые и принадлежат программе.
+
+    Своя папка — это категория или тип из `managed_folders`, а во внешней папке
+    3D ещё и подпапка с именем расширения: `All_3d/gcode` создаёт сама
+    программа (`plan_3d_folder`), но в `managed_folders` такого имени нет и
+    быть не должно — это расширения, а не категории. Из-за этого откат
+    возвращал файлы из All_3d, а пустые `gcode`, `stl`, `3mf` оставлял лежать
+    навсегда: та самая половина отмены, ради которой уборку и добавляли.
+
+    Вверх поднимаемся до корня загрузок или до самой папки 3D — их не трогаем
+    никогда, это чужая территория, а не созданный программой каркас.
     """
     root = Path(config.downloads_path)
+    external = external_3d_path(config)
+    stop = {root} if external is None else {root, external}
     managed = set(config.managed_folders)
     for entry in performed:
         folder = Path(entry["src"]).parent
-        while folder != root and folder.name in managed and folder.is_dir():
+        while (folder not in stop and folder.is_dir()
+               and (folder.name in managed or folder.parent == external)):
             try:
                 if any(folder.iterdir()):
                     break

@@ -18,7 +18,7 @@ from .config import Config
 from .scanner import scan
 from .planner import build_plan, Move
 from .mover import apply
-from .util import rel_to
+from .util import rel_to, listing, report
 from . import ai
 from . import history
 
@@ -116,13 +116,6 @@ QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
 QScrollBar::handle:vertical { background: rgba(255,255,255,0.25); border-radius: 5px; }
 QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
 """
-
-
-def _notes_text(notes: list[tuple[str, str]], limit: int = 10) -> str:
-    """Оговорки списком. Длинный хвост сворачивается — окно не резиновое."""
-    lines = "\n".join(f"• {where}: {why}" for where, why in notes[:limit])
-    tail = f"\n…и ещё {len(notes) - limit}" if len(notes) > limit else ""
-    return lines + tail
 
 
 class HistoryDialog(QDialog):
@@ -240,7 +233,7 @@ class HistoryDialog(QDialog):
             # лежит под другими именами — как раз то, что легко не заметить.
             QMessageBox.warning(
                 self, "Откат прошёл с оговорками",
-                "Не всё вернулось ровно на своё место:\n\n" + _notes_text(notes))
+                "Не всё вернулось ровно на своё место:\n\n" + listing(notes))
         self._reload()
 
 
@@ -580,15 +573,12 @@ class GlassWindow(QWidget):
             return
         result = apply(self.moves, self.config, dry_run=False)
         self._save_settings()
-        msg = f"Перемещено: {result.moved}, ошибок: {len(result.errors)}"
-        self.status.setText(msg)
-        if result.notes:
-            # В цели уже лежало такое имя, и файл лёг рядом под другим. В плане
-            # было написано иначе — значит, надо сказать, а не молча разойтись
-            # с тем, что человек только что прочитал в таблице.
-            msg += f"\n\n{_notes_text(result.notes)}"
+        # В строку статуса — короткий итог, в окно — полный отчёт с именами.
+        # Само число ошибок ни о чём не говорит: какой файл не переехал и
+        # почему, видно только из списка (`util.report`).
+        self.status.setText(f"Перемещено: {result.moved}, ошибок: {len(result.errors)}")
         (QMessageBox.warning if result.errors or result.notes
-         else QMessageBox.information)(self, "Готово", msg)
+         else QMessageBox.information)(self, "Готово", report(result))
         self.preview()
 
 

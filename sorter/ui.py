@@ -11,7 +11,7 @@ from tkinter import ttk, messagebox
 from .config import Config
 from .planner import build_plan, Move
 from .mover import apply
-from .util import rel_to as _rel_to
+from .util import rel_to as _rel_to, report
 
 
 class SorterApp:
@@ -147,17 +147,14 @@ class SorterApp:
             return
 
         result = apply(self.moves, self.config, dry_run=False)
-        msg = f"Перемещено: {result.moved}, ошибок: {len(result.errors)}"
-        self.status.set(msg)
-        if result.notes:
-            # Имя в цели оказалось занято, файл лёг рядом под другим — в плане
-            # было написано иначе, значит надо сказать.
-            details = "\n".join(f"• {where}: {why}" for where, why in result.notes[:10])
-            msg += f"\n\n{details}"
+        # В строку статуса — короткий итог, в окно — полный отчёт с именами:
+        # одно лишь число ошибок не говорит, какой файл остался в загрузках и
+        # почему. Текст общий с окном PyQt и консолью (`util.report`).
+        self.status.set(f"Перемещено: {result.moved}, ошибок: {len(result.errors)}")
         if result.errors or result.notes:
-            messagebox.showwarning("Готово с оговорками", msg)
+            messagebox.showwarning("Готово с оговорками", report(result))
         else:
-            messagebox.showinfo("Готово", msg)
+            messagebox.showinfo("Готово", report(result))
         self.preview()
 
 
