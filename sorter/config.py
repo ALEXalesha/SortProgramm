@@ -430,6 +430,12 @@ class Config:
 
         Список расширений 3D дописывается сам: окно про него не знает и знать не
         должно, а без него настройка выглядит рабочей, но не делает ничего.
+
+        В конце файла — перевод строки. Без него закрытие окна каждый раз
+        превращало config.json в изменённый файл: содержимое то же, а `git diff`
+        показывает «\\ No newline at end of file». В репозитории программы это
+        шум при каждом запуске, а редакторы и консольные утилиты последнюю
+        строку без перевода показывают склеенной со следующей.
         """
         data = {
             **self.extra,
@@ -437,5 +443,5 @@ class Config:
             "external_3d": _clean_3d(self.external_3d, []) if self.external_3d else {},
         }
         Path(path).write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
