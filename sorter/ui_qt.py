@@ -332,11 +332,17 @@ class GlassWindow(QWidget):
         row.addWidget(self.to_3d)
         self.path_3d_edit = QLineEdit(self.config.external_3d.get("path", ""))
         self.path_3d_edit.setPlaceholderText("Путь к папке для 3D-моделей (3mf/obj/stl/gcode)")
-        self.path_3d_edit.setEnabled(self.to_3d.isChecked())
+        # Поле остаётся живым и со снятой галочкой. Галочка решает только одно —
+        # уезжают ли модели из загрузок; разбор самого корня All_3d по подпапкам
+        # расширений идёт всегда, пока путь задан. Отключённое поле обещало
+        # обратное: настройка выглядит выключенной, а файлы в All_3d при каждой
+        # уборке продолжают переезжать, и убрать путь через окно нельзя — только
+        # правкой config.json руками. Про негодный путь окно в этом состоянии
+        # ещё и предупреждает («Папка 3D не разбирается»), то есть указывает на
+        # поле, которое само же и запретило трогать.
         row.addWidget(self.path_3d_edit, stretch=1)
         self.browse_3d_btn = QPushButton("Обзор…")
         self.browse_3d_btn.clicked.connect(self.browse_3d_folder)
-        self.browse_3d_btn.setEnabled(self.to_3d.isChecked())
         row.addWidget(self.browse_3d_btn)
         return row
 
@@ -401,9 +407,8 @@ class GlassWindow(QWidget):
     # --- действия ---
 
     def _on_3d_toggle(self, *_):
-        on = self.to_3d.isChecked()
-        self.path_3d_edit.setEnabled(on)
-        self.browse_3d_btn.setEnabled(on)
+        # Поле пути не гасим: оно управляет разбором самой All_3d, который идёт
+        # независимо от галочки (см. `_row_3d`).
         self.preview()
 
     def browse_folder(self):

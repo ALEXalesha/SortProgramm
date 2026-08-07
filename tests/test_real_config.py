@@ -124,9 +124,30 @@ def test_managed_folders_cover_all_types(cfg):
         ("model.fbx", "3D"),
         ("макет.psd", "Дизайн"),
         ("скрипт.js", "Код"),
+        # `.cpp` и `.java` стоят в type_map["Code"] — программа знает, что это
+        # исходники, и всё равно клала их в `Others/Code`: слова в категории
+        # «Код» не было, а соседние `.py`, `.js`, `.ts`, `.html` были. Снаружи
+        # это выглядит как «не опознан», хотя тип опознан безошибочно.
+        ("main.cpp", "Код"),
+        ("Hello.java", "Код"),
     ],
 )
 def test_extension_known_to_type_map_is_known_to_a_category(cfg, name, expected):
+    assert category(cfg, name) == expected
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        # `.c` в слова категории не добавлен нарочно: слова ищутся вхождением
+        # подстроки, а «.c» входит в «.css», «.csv» и в любое имя с «.com».
+        # Одна такая запись увела бы в «Код» половину загрузок — ровно тот
+        # случай, ради которого пустую строку в списке слов выбрасывают.
+        ("таблица.csv", "Others"),
+        ("style.css", "Код"),
+    ],
+)
+def test_short_extension_words_do_not_swallow_neighbours(cfg, name, expected):
     assert category(cfg, name) == expected
 
 

@@ -39,11 +39,16 @@ def apply(moves: list[Move], config: Config, dry_run: bool = True) -> Result:
             # вкладывает в неё (папка) — и то и другое снаружи выглядит как
             # успешная сортировка. Проверяем ещё раз, прямо перед перемещением.
             dst = _free_name(mv.dst, as_dir=mv.src.is_dir())
+            shutil.move(str(mv.src), str(dst))
+            # Оговорку ставим только после того, как перемещение прошло. Раньше
+            # она писалась заранее, и упавший `shutil.move` (файл открыт другой
+            # программой, кончилось место) давал отчёт, который спорит сам с
+            # собой: один и тот же файл стоял и в «Не переехали», и в «Легли под
+            # другим именем». Человек шёл искать `клип (1).mp4`, которого нет.
             if dst != mv.dst:
                 result.notes.append((
                     str(mv.src),
                     f"в цели уже есть «{mv.dst.name}», положили как «{dst.name}»"))
-            shutil.move(str(mv.src), str(dst))
             performed.append({"src": str(mv.src), "dst": str(dst)})
             result.moved += 1
         except OSError as exc:
@@ -211,13 +216,18 @@ def undo(undo_log: Path | str, config: Config | None = None) -> list[tuple[str, 
             # как `клип.mp4 (1)` — расширение перестало быть последним, и файл
             # больше не открывается двойным щелчком.
             target = _free_name(src, as_dir=dst.is_dir())
-            notes.append((str(src), f"путь занят, вернули как «{target.name}»"))
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(dst), str(target))
         except OSError as exc:
             notes.append((str(dst), str(exc)))
         else:
+            # Про новое имя говорим только когда файл под ним и правда лежит.
+            # Заранее поставленная оговорка после упавшего `shutil.move`
+            # называла имя, которого на диске нет, — и это в том самом отчёте,
+            # ради которого откат вообще отчитывается.
+            if target != src:
+                notes.append((str(src), f"путь занят, вернули как «{target.name}»"))
             restored.append({"src": str(dst), "dst": str(target)})
 
     if config is not None:

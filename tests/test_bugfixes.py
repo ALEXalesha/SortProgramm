@@ -1461,3 +1461,139 @@ def test_empty_extension_is_not_a_type(tmp_path):
         tmp_path, {"Медиа": ["клип"]}, type_map={"Videos": ["mp4", ""]})
 
     assert match_type("", config.type_map, config.fallback_type) == "Misc"
+
+
+# --- отчёт, который спорит сам с собой ---
+
+
+class _Boom:
+    """Подменяет `shutil.move`: перемещение упало уже после проверки имени."""
+
+    message = "файл занят другой программой"
+
+    def __call__(self, src, dst):
+        raise OSError(self.message)
+
+
+def test_failed_move_is_not_reported_as_moved_under_another_name(tmp_path, monkeypatch):
+    """Отчёт называл один и тот же файл и непереехавшим, и переехавшим.
+
+    Оговорку «в цели уже есть X, положили как Y» `apply` ставил ДО
+    `shutil.move`. Между проверкой имени и перемещением падать есть от чего:
+    файл открыт другой программой, кончилось место, сняли диск. Тогда файл
+    попадал сразу в оба списка отчёта — «Не переехали» с причиной и «Легли под
+    другим именем» с именем `клип (1).mp4`, которого на диске нет.
+
+    Отчёт этот пишут ровно затем, чтобы человек знал, где искать свой файл.
+    Здесь он отправлял искать несуществующее имя, и заодно противоречил
+    соседней строке о том же файле.
+    """
+    import shutil
+
+    src = touch(tmp_path / "клип.mp4")
+    dst = touch(tmp_path / "Медиа" / "Videos" / "клип.mp4", "чужой")
+    monkeypatch.setattr(shutil, "move", _Boom())
+
+    result = apply([Move(src, dst)], make_config(tmp_path), dry_run=False)
+
+    assert result.moved == 0
+    assert len(result.errors) == 1
+    assert result.notes == [], (
+        "файл не переехал, а отчёт обещает искать его под другим именем: "
+        f"{result.notes}")
+    assert "клип (1).mp4" not in report(result)
+
+
+def test_successful_dedup_still_says_the_new_name(tmp_path):
+    """Оговорка не должна пропасть там, где файл и правда лёг рядом."""
+    src = touch(tmp_path / "клип.mp4")
+    dst = touch(tmp_path / "Медиа" / "Videos" / "клип.mp4", "чужой")
+
+    result = apply([Move(src, dst)], make_config(tmp_path), dry_run=False)
+
+    assert result.moved == 1
+    assert (tmp_path / "Медиа" / "Videos" / "клип (1).mp4").exists()
+    assert "клип (1).mp4" in report(result)
+
+
+def test_failed_undo_does_not_claim_the_file_came_back(tmp_path, monkeypatch):
+    """То же самое в откате: «вернули как X» при упавшем возврате.
+
+    Молчаливый успешный откат README называет худшим из исходов — но откат,
+    который называет имя, которого нет, ничем не лучше: файл остался на новом
+    месте, а человек ищет его на старом под номером.
+    """
+    import shutil
+
+    home = touch(tmp_path / "клип.mp4", "занято руками")
+    moved = touch(tmp_path / "Медиа" / "Videos" / "клип.mp4", "переехавший")
+    log = tmp_path / "undo.json"
+    log.write_text(
+        json.dumps([{"src": str(home), "dst": str(moved)}]), encoding="utf-8")
+    monkeypatch.setattr(shutil, "move", _Boom())
+
+    notes = undo(log)
+
+    assert not any("вернули как" in why for _, why in notes), (
+        f"откат упал, а отчёт говорит, что файл вернулся: {notes}")
+    assert any(_Boom.message in why for _, why in notes)
+
+
+def test_successful_undo_still_names_the_place_it_used(tmp_path):
+    """А удавшийся возврат под другим именем по-прежнему называет это имя."""
+    home = touch(tmp_path / "клип.mp4", "занято руками")
+    moved = touch(tmp_path / "Медиа" / "Videos" / "клип.mp4", "переехавший")
+    log = tmp_path / "undo.json"
+    log.write_text(
+        json.dumps([{"src": str(home), "dst": str(moved)}]), encoding="utf-8")
+
+    notes = undo(log)
+
+    assert any("клип (1).mp4" in why for _, why in notes), notes
+    assert (tmp_path / "клип (1).mp4").exists()
+
+
+# --- настройки 3D нет в файле вовсе ---
+
+
+def test_missing_3d_setting_still_knows_the_extensions(tmp_path):
+    """У нового пользователя ключа `external_3d` в config.json нет.
+
+    `_clean_3d` отвечал на это голым `{}` — без списка расширений. Дальше
+    всё выглядело исправно: человек ставит галочку «3D → отдельная папка»,
+    выбирает папку через «Обзор…», путь годный, предупреждения нет, план
+    построен — и ни одна модель в эту папку не едет, потому что совпадать
+    расширению не с чем. Само чинилось только после закрытия и повторного
+    открытия окна: список расширений дописывает `save` на выходе.
+
+    Ровно тот же исход, что у забытого `extensions` внутри объекта, — там его
+    подставляли давно, а здесь ветка возвращала пустоту.
+    """
+    downloads = tmp_path / "загрузки"
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(downloads)}), encoding="utf-8")
+    touch(downloads / "деталь.stl")
+
+    config = Config.load(cfg_path)
+    # окно: галочка + путь через «Обзор…», ещё до первого сохранения
+    config.external_3d["enabled"] = True
+    config.external_3d["path"] = str(tmp_path / "All_3d")
+
+    moves = build_plan(config, send_3d_external=True)
+
+    assert [m.dst for m in moves] == [tmp_path / "All_3d" / "stl" / "деталь.stl"]
+
+
+def test_broken_3d_setting_also_keeps_the_extensions(tmp_path):
+    """`"external_3d": "C:/All_3d"` после правки руками — то же самое."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "downloads_path": str(tmp_path / "загрузки"),
+        "external_3d": "C:/All_3d",
+    }), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.problems
+    assert config.external_3d["extensions"]
