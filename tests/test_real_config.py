@@ -109,3 +109,33 @@ def test_managed_folders_cover_all_categories(cfg):
 def test_managed_folders_cover_all_types(cfg):
     missing = (set(cfg.type_map) | {cfg.fallback_type}) - set(cfg.managed_folders)
     assert not missing
+
+
+# --- расширения, названные в type_map, но забытые в словах категории ---
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        # `.stl` стоит и в type_map["3D"], и в external_3d.extensions — то есть
+        # программа знает, что это 3D, — а слова в категории не было, и модель
+        # с нейтральным именем уезжала в Others при снятой галочке выноса.
+        ("деталь.stl", "3D"),
+        ("model.fbx", "3D"),
+        ("макет.psd", "Дизайн"),
+        ("скрипт.js", "Код"),
+    ],
+)
+def test_extension_known_to_type_map_is_known_to_a_category(cfg, name, expected):
+    assert category(cfg, name) == expected
+
+
+def test_every_external_3d_extension_is_a_3d_keyword(cfg):
+    """Список выноса 3D и слова категории «3D» должны говорить одно и то же.
+
+    Иначе галочка «3D → отдельная папка» меняет не только место, но и саму
+    категорию файла: с ней `деталь.stl` — модель, без неё — «не опознан».
+    """
+    words = {w.lower() for w in cfg.categories["3D"] if w.startswith(".")}
+    missing = {f".{e.lower()}" for e in cfg.external_3d.get("extensions", [])} - words
+    assert not missing, f"расширения выноса 3D нет в словах категории: {missing}"

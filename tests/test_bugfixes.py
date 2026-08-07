@@ -1372,3 +1372,92 @@ def test_path_from_the_root_of_the_current_drive_is_not_enough(tmp_path):
     config = make_3d_config(tmp_path, r"\All_3d")
 
     assert "All_3d" in external_3d_warning(config, send_3d_external=True)
+
+
+# --- пустая строка там, где ждут слово или выражение ---
+
+
+def write_rules_with_words(root, categories, patterns=None, type_map=None):
+    (root / "rules.json").write_text(json.dumps({
+        "categories": categories,
+        "patterns": patterns or {},
+        "type_map": type_map or {"Videos": ["mp4"], "Installers": ["exe"]},
+        "managed_folders": ["Медиа", "Программы", "Скриншоты", "Others",
+                            "Videos", "Installers", "Misc"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    }, ensure_ascii=False), encoding="utf-8")
+    (root / "config.json").write_text(json.dumps({
+        "downloads_path": str(root / "dl")}, ensure_ascii=False), encoding="utf-8")
+    return Config.load(root / "config.json")
+
+
+def test_empty_keyword_does_not_swallow_every_file(tmp_path):
+    """Пустая строка в списке слов забирала себе всю папку загрузок.
+
+    `match_category` ищет вхождение подстроки, а пустая строка входит в любое
+    имя. Одна такая запись — недописанная правка, стёртое слово, список,
+    собранный скриптом, — и первая же категория забирает вообще всё: и
+    `setup.exe`, и `договор.pdf`, и то, для чего правила писались.
+
+    Заметить это нечем. План построен, файлы разложены, жалоб нет, а в
+    предпросмотре у каждой строки честная пометка «слово» — та самая, которой
+    README велит доверять. От правильной раскладки отличить нельзя ничем.
+
+    Это ровно тот случай, ради которого `_rule_map` выбрасывает список слов,
+    записанный строкой: там `"Медиа": "клип"` перебирался по буквам и в «Медиа»
+    уезжало всё. Пустая строка внутри списка делает то же самое, а проверки на
+    неё не было.
+    """
+    config = write_rules_with_words(tmp_path, {"Медиа": ["клип", ""], "Программы": ["setup"]})
+
+    assert explain_category("setup.exe", "", config) == ("Программы", "слово"), (
+        "пустое слово забрало файл у категории, которая его честно опознаёт")
+    assert explain_category("непонятно.xyz", "", config) == ("Others", "не опознан")
+
+
+def test_empty_keyword_is_reported(tmp_path):
+    """Молча выбросить нельзя: человек написал слово и ждёт, что оно работает."""
+    config = write_rules_with_words(tmp_path, {"Медиа": ["клип", ""]})
+
+    assert any("Медиа" in p for p in config.problems), (
+        f"о пустом слове не сказано ни слова: {config.problems}")
+    assert config.categories["Медиа"] == ["клип"]
+
+
+def test_empty_pattern_does_not_swallow_every_file(tmp_path):
+    """Пустая регулярка подходит к любому имени — и уносит всю папку.
+
+    Шаблоны сильнее слов: они проверяются раньше. Пустое выражение поэтому
+    забирает файлы даже у категорий, которые опознают их по слову, и делает
+    это с пометкой «шаблон».
+    """
+    config = write_rules_with_words(
+        tmp_path, {"Медиа": ["клип"]}, patterns={"Скриншоты": ["", r"^screenshot"]})
+
+    assert explain_category("клип.mp4", "", config) == ("Медиа", "слово"), (
+        "пустой шаблон забрал файл у категории, которая его честно опознаёт")
+    assert explain_category("screenshot_01.png", "", config) == ("Скриншоты", "шаблон"), (
+        "соседнее рабочее выражение должно было уцелеть")
+
+
+def test_empty_pattern_is_reported(tmp_path):
+    """О пустом выражении говорим так же, как о битом."""
+    config = write_rules_with_words(tmp_path, {"Медиа": ["клип"]}, patterns={"Скриншоты": [""]})
+
+    assert any("Скриншоты" in p for p in config.problems), (
+        f"о пустом шаблоне не сказано ни слова: {config.problems}")
+    assert config.patterns["Скриншоты"] == []
+
+
+def test_empty_extension_is_not_a_type(tmp_path):
+    """Пустая строка в `type_map` делала своим типом файлы без расширения.
+
+    `match_type` сравнивает расширение на равенство, и у файла без расширения
+    оно пустое. Такой файл получал настоящий тип вместо запасного — то есть
+    уезжал в чужую папку, и снова молча.
+    """
+    config = write_rules_with_words(
+        tmp_path, {"Медиа": ["клип"]}, type_map={"Videos": ["mp4", ""]})
+
+    assert match_type("", config.type_map, config.fallback_type) == "Misc"

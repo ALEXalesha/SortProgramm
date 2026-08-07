@@ -19,6 +19,7 @@ class SorterApp:
         self.config_path = config_path
         self.config = Config.load(config_path)
         self.moves: list[Move] = []
+        self.root = root
 
         root.title("Сортировщик загрузок")
         root.geometry("760x520")
@@ -27,6 +28,11 @@ class SorterApp:
         self._build_header(root)
         self._build_table(root)
         self._build_footer(root)
+
+        # Крестик окна закрывает его сам, минуя весь наш код: без этого
+        # перехвата настройки, которые окно только что меняло, не сохранялись
+        # никогда.
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Про испорченные настройки предупреждали окно PyQt и CLI, а этот
         # интерфейс молчал: без правил всё уезжает в Others, и снаружи это
@@ -95,6 +101,35 @@ class SorterApp:
         ttk.Label(root, textvariable=self.status, padding=(12, 0, 12, 10), foreground="#333").pack(fill="x")
 
     # --- действия ---
+
+    def _save_settings(self):
+        """Пишет в config.json то, что окно меняло. Правила не трогает.
+
+        Меняет это окно одну настройку — галочку выноса 3D, — и она не
+        сохранялась никогда. Окно PyQt пишет её в config.json при закрытии, а
+        консоль без флагов оттуда же её и читает: на этом держится обещание,
+        что окно и консоль на одних настройках показывают один и тот же план.
+        Здесь оно не выполнялось — галочку поставили, файлы разложили, окно
+        закрыли, и следующий запуск снова раскладывает модели по обычным
+        категориям. Ни ошибки, ни слова о том, что настройку забыли.
+
+        Пути к папке 3D у этого окна нет, поэтому в конфиге он остаётся как
+        был: стирать то, чего не показывал, окно не вправе.
+
+        Неудачу записи глотаем молча по той же причине, что и в окне PyQt: она
+        случается на закрытии, говорить о ней уже некому и некуда.
+        """
+        if not isinstance(self.config.external_3d, dict):
+            self.config.external_3d = {}
+        self.config.external_3d["enabled"] = self.to_3d.get()
+        try:
+            self.config.save(self.config_path)
+        except OSError:
+            pass
+
+    def _on_close(self):
+        self._save_settings()
+        self.root.destroy()
 
     def open_downloads(self):
         path = self.config.downloads_path
