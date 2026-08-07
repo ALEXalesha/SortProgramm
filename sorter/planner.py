@@ -5,11 +5,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .classifier import classify, explain_category, extension_of
-from .config import Config
+from .config import Config, usable_3d_path
 from .scanner import scan
 
 TEXT_EXTENSIONS = {"txt", "md", "csv"}
 CONTENT_PREVIEW_CHARS = 2000
+
+# Пометка причины для того, что раскладывается по расширению, а не по категории.
+# Место таким файлам выбирает расширение, и говорить о них словами таблицы
+# категорий («слово», «не опознан») значит называть причину, которой не было.
+BY_EXTENSION = "по расширению"
 
 
 @dataclass(frozen=True)
@@ -45,15 +50,55 @@ def _dedup(dst: Path, taken: set[Path]) -> Path:
 
 
 def external_3d_path(config: Config) -> Path | None:
-    """Путь внешней папки 3D (All_3d), если он задан в конфиге.
+    """Путь внешней папки 3D (All_3d), если он задан в конфиге и годится.
 
     Нужен не только планировщику: чистка пустых папок (`mover`) тоже должна
     знать, где кончается своё и начинается чужое.
+
+    Неполный путь (`All_3d`, `C:`) здесь и отбивается — один раз на всех
+    читателей. Считаться он будет от рабочей папки, а она у ярлыка какая
+    угодно, так что модели уедут из загрузок неизвестно куда, и план при этом
+    покажет строку, неотличимую от папки внутри загрузок (`usable_3d_path`).
+    Отвечая None, мы приравниваем такой путь к «пути нет»: модели остаются в
+    обычных категориях, а `external_3d_warning` говорит, почему.
     """
     if not isinstance(config.external_3d, dict):
         return None
     raw = config.external_3d.get("path", "")
-    return Path(raw) if raw else None
+    return Path(raw) if usable_3d_path(raw) else None
+
+
+def external_3d_warning(config: Config, send_3d_external: bool) -> str:
+    """Почему вынос 3D ничего не вынесет. Пустая строка — вынесет или не просили.
+
+    Настройка, которая включена и не работает, — худший вид поломки в этой
+    программе: план построен, файлы разложены, жалоб нет, а модели поехали не
+    туда, куда человек велел. Отличить это от исправной работы можно только
+    помня, куда они должны были поехать.
+
+    Текст общий на три интерфейса нарочно. Раньше о пустом пути говорил
+    `Config.load` — то есть по галочке, сохранённой в файле, — а окно PyQt
+    считало то же самое ещё раз и по-своему. Консоль не говорила ничего:
+    `--to3d` включает вынос поверх выключенной галочки, и тогда предупредить
+    было некому. Проверка правил через консоль на том и держится, что консоль
+    показывает то же, что окно.
+
+    Про негодный путь говорим и при выключенной галочке: разбор корня All_3d
+    по подпапкам расширений идёт всегда, когда путь задан, и негодный путь
+    отменяет заодно и его. Пустой путь при выключенной галочке — не поломка,
+    а обычная настройка «внешней папкой не пользуемся».
+    """
+    raw = config.external_3d.get("path", "") if isinstance(config.external_3d, dict) else ""
+    if usable_3d_path(raw):
+        return ""
+    if not raw:
+        if not send_3d_external:
+            return ""
+        return "Путь для 3D не указан — модели поедут в обычные категории."
+    tail = (" Модели поедут в обычные категории." if send_3d_external
+            else " Папка 3D не разбирается.")
+    return (f"Путь для 3D «{raw}» неполный — по нему не видно ни диска, ни папки."
+            + tail)
 
 
 def _external_3d_extensions(config: Config) -> set[str]:
@@ -96,7 +141,13 @@ def plan(
         _, file_type, extension = classify(src.name, content, config)
 
         if send_3d_external and external_path is not None and extension in ext_3d:
+            # Место выбрало расширение, категория тут ни при чём. Причина её
+            # выбора («слово», «не опознан») в такой строке плана врала: по
+            # таблице в README «не опознан» значит «едет в Others», а файл едет
+            # во внешнюю папку. Просматривать план README советует именно по
+            # этой пометке — то есть врала она ровно там, где на неё смотрят.
             dst = external_path / extension / src.name
+            reason = BY_EXTENSION
         else:
             dst = root / category / file_type / src.name
 
@@ -119,6 +170,10 @@ def plan_3d_folder(
 
     Каждый файл едет в All_3d/<расширение>/имя (part.gcode → All_3d/gcode/part.gcode).
     Файлы без расширения оставляем на месте. ИИ здесь не нужен — только расширение.
+
+    Пометка причины та же, что у моделей, вынесенных из загрузок: назначение
+    одно и то же, и объяснять две соседние строки плана по-разному (а раньше
+    вторую не объясняли вовсе) незачем.
     """
     external_path = external_3d_path(config)
     if external_path is None:
@@ -137,7 +192,7 @@ def plan_3d_folder(
             continue  # уже в своей подпапке
         dst = _dedup(dst, taken)
         taken.add(dst)
-        moves.append(Move(src, dst))
+        moves.append(Move(src, dst, note=BY_EXTENSION))
 
     return moves
 

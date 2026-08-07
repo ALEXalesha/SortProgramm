@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from .config import Config
-from .planner import build_plan, Move
+from .planner import build_plan, external_3d_warning, Move
 from .mover import apply
 from .util import rel_to as _rel_to, report
 
@@ -131,7 +131,11 @@ class SorterApp:
             if mv.note:
                 dest = f"{dest}   ({mv.note})"
             self.tree.insert("", "end", values=(_rel_to(mv.src, root), dest))
-        self.status.set(f"План готов: {len(self.moves)} шт. к перемещению.")
+        # Галочка 3D без годного пути ничего не выносит, и снаружи это
+        # неотличимо от исправной работы. Текст общий с окном PyQt и консолью.
+        warning = external_3d_warning(self.config, self.to_3d.get())
+        tail = f"   {warning}" if warning else ""
+        self.status.set(f"План готов: {len(self.moves)} шт. к перемещению.{tail}")
 
     def do_apply(self):
         if not self.moves:

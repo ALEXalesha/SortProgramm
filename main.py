@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from sorter.config import Config
-from sorter.planner import build_plan
+from sorter.planner import build_plan, external_3d_warning
 from sorter.mover import apply
 from sorter.util import rel_to
 
@@ -49,6 +49,15 @@ def run_cli(path: str | None, do_apply: bool, to_3d: bool | None, deep: bool) ->
     # проверка правил через консоль ничего не проверяет.
     if to_3d is None:
         to_3d = bool(config.external_3d.get("enabled", False))
+
+    # Включённый вынос 3D без годного пути ничего не выносит: модели молча
+    # едут в обычные категории. Окно про это говорит строкой под планом, а
+    # консоль молчала — предупреждал `Config.load`, и только по галочке,
+    # сохранённой в файле. `--to3d` включает вынос поверх выключенной галочки,
+    # и тогда не предупреждал никто. План при этом от исправного неотличим.
+    warning = external_3d_warning(config, to_3d)
+    if warning:
+        print(f"! {warning}\n")
 
     # deep=False — только корень загрузок; deep=True — переразложить и то,
     # что программа уже разложила по своим папкам. Плюс разбор All_3d.

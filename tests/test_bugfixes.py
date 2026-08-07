@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 
 from sorter.ai import load_api_key, parse_ai_response, useful_rules
-from sorter.config import Config
+from sorter.config import Config, usable_3d_path
 from sorter.classifier import explain_category, match_category, match_type
 from sorter.history import list_operations
 from sorter.mover import apply, undo, Result
-from sorter.planner import build_plan, Move
+from sorter.planner import build_plan, external_3d_warning, Move
 from sorter.scanner import scan
 from sorter.util import report
 
@@ -1118,3 +1118,257 @@ def test_correct_patterns_stay_quiet(tmp_path):
     config = Config.load(tmp_path / "config.json")
 
     assert config.problems == []
+
+
+# --- вынос 3D в никуда ---
+
+
+def make_3d_config(root, path, enabled=True):
+    config = make_config(root)
+    config.type_map = {"Models": ["stl"], **config.type_map}
+    config.managed_folders = [*config.managed_folders, "Models"]
+    config.external_3d = {"enabled": enabled, "path": path, "extensions": ["stl"]}
+    return config
+
+
+def test_incomplete_3d_path_does_not_take_files_out_of_downloads(tmp_path, monkeypatch):
+    r"""Неполный путь уносил модели в рабочую папку программы.
+
+    Категорию от пути программа бережёт (`_is_folder_name`): полный путь,
+    вписанный вместо имени папки, уносит файлы из загрузок неизвестно куда.
+    С путём внешней папки 3D всё зеркально: имя без диска (`All_3d`, опечатка,
+    правка руками) — это путь от рабочей папки, а она у ярлыка какая угодно.
+    План при этом показывает `All_3d\stl\деталь.stl` — строку, неотличимую
+    от папки внутри загрузок. Файл уезжает не туда, куда обещано, и сказать
+    об этом некому.
+    """
+    workdir = tmp_path / "рабочая папка программы"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    touch(tmp_path / "деталь.stl")
+    config = make_3d_config(tmp_path, "All_3d")
+
+    moves = build_plan(config, send_3d_external=True)
+
+    assert [mv.dst for mv in moves] == [tmp_path / "Others" / "Models" / "деталь.stl"], (
+        "неполный путь увёл модель из загрузок")
+
+
+def test_incomplete_3d_path_is_reported(tmp_path):
+    """О таком пути надо сказать вслух: сам по себе он выглядит исправным."""
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]}, "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "config.json").write_text(json.dumps({
+        "downloads_path": str(tmp_path),
+        "external_3d": {"enabled": True, "path": "All_3d"},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(tmp_path / "config.json")
+
+    assert any("All_3d" in p for p in config.problems), (
+        f"о неполном пути не сказано ни слова: {config.problems}")
+
+
+def test_full_3d_path_stays_quiet(tmp_path):
+    """Исправный путь не должен собирать жалобы на ровном месте."""
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]}, "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "config.json").write_text(json.dumps({
+        "downloads_path": str(tmp_path),
+        "external_3d": {"enabled": True, "path": str(tmp_path / "All_3d")},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    assert Config.load(tmp_path / "config.json").problems == []
+
+
+def test_3d_without_path_is_explained_to_every_interface(tmp_path):
+    """Окно про пустой путь говорило, консоль — нет.
+
+    Предупреждало не окно и не консоль, а `Config.load` — по галочке,
+    сохранённой в файле. Флаг `--to3d` включает вынос поверх выключенной
+    галочки, и тогда не предупреждал никто: модели молча ехали в обычные
+    категории. Текст теперь общий, чтобы все трое говорили одно и то же.
+    """
+    config = make_3d_config(tmp_path, "", enabled=False)
+
+    assert "не указан" in external_3d_warning(config, send_3d_external=True)
+    assert external_3d_warning(config, send_3d_external=False) == ""
+
+
+def test_incomplete_3d_path_is_explained_to_every_interface(tmp_path):
+    config = make_3d_config(tmp_path, "All_3d")
+
+    warning = external_3d_warning(config, send_3d_external=True)
+
+    assert "All_3d" in warning
+
+
+def test_incomplete_3d_path_is_reported_even_with_the_box_unticked(tmp_path):
+    """Разбор корня All_3d идёт всегда, когда путь задан, — и его тоже отменяет.
+
+    Галочка отвечает только за вынос моделей из загрузок. Негодный путь
+    выключает заодно и раскладку самой All_3d по подпапкам расширений, а об
+    этом при снятой галочке не говорил никто.
+    """
+    config = make_3d_config(tmp_path, "All_3d", enabled=False)
+
+    assert "All_3d" in external_3d_warning(config, send_3d_external=False)
+
+
+def test_working_3d_path_says_nothing(tmp_path):
+    config = make_3d_config(tmp_path, str(tmp_path / "All_3d"))
+
+    assert external_3d_warning(config, send_3d_external=True) == ""
+    assert external_3d_warning(config, send_3d_external=False) == ""
+
+
+# --- чем выбрано место, куда поедет модель ---
+
+
+def test_3d_move_is_marked_by_extension(tmp_path):
+    r"""Пометка причины врала про модели, уезжающие во внешнюю папку.
+
+    Место им выбрало расширение, а в `note` уезжала причина выбора категории,
+    которая тут ни при чём. В предпросмотре это выглядело как
+    `All_3d\stl\деталь.stl   (не опознан)`, хотя «не опознан» по таблице в
+    README значит «едет в Others». Просматривать план README советует именно
+    по этой пометке — то есть врала она ровно там, где на неё смотрят.
+    """
+    touch(tmp_path / "деталь.stl")
+    config = make_3d_config(tmp_path, str(tmp_path / "All_3d"))
+
+    moves = build_plan(config, send_3d_external=True)
+
+    assert [mv.note for mv in moves] == ["по расширению"]
+
+
+def test_3d_folder_move_is_marked_the_same_way(tmp_path):
+    """Одна и та же раскладка по расширениям — одна и та же пометка.
+
+    Файлы из корня All_3d ехали в те же подпапки вовсе без пометки: две
+    соседние строки плана с одинаковым назначением объясняли себя по-разному.
+    """
+    external = tmp_path / "All_3d"
+    touch(external / "рассыпуха.stl")
+    config = make_3d_config(tmp_path, str(external))
+
+    moves = build_plan(config, send_3d_external=True)
+
+    assert [mv.note for mv in moves] == ["по расширению"]
+
+
+# --- правило без категории ---
+
+
+def test_rule_without_category_is_dropped(tmp_path):
+    """Пустая категория в overrides.json — правило, которого нет.
+
+    `explain_category` берёт правило через `or`, поэтому пустая строка
+    проваливается дальше к шаблонам и словам: файл едет так, будто правила и
+    не было. А `_ai_done` смотрит на само наличие ключа — и ответ модели про
+    такое имя выбрасывает, «сберегая» правило, которого нет. Кнопка «✨ИИ»
+    из-за этого снова превращалась в оплаченную пустышку, но уже точечно:
+    имя уходит в запрос (`_has_rule` пустую строку правилом не считает),
+    деньги платятся, ответ выбрасывается, а окно отчитывается «свои правила
+    сохранены». Файл при этом остаётся в Others навсегда.
+
+    Разбираем это там же, где разбирают все прочие записи, которые выглядят
+    правилом и им не являются, — при чтении, один раз и вслух.
+    """
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]}, "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "config.json").write_text(json.dumps({
+        "downloads_path": str(tmp_path)}, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "overrides.json").write_text(json.dumps({
+        "пустое.pdf": "", "нормальное.pdf": "Документы",
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(tmp_path / "config.json")
+
+    assert config.overrides == {"нормальное.pdf": "Документы"}
+    assert any("пустое.pdf" in p for p in config.problems), (
+        f"о правиле без категории не сказано ни слова: {config.problems}")
+
+
+# --- правил нет вовсе ---
+
+
+def test_missing_rules_file_is_reported(tmp_path):
+    """Без `rules.json` программа молча сметала всё в Others.
+
+    Файл лежит рядом с программой отдельно от `config.json`, и пропасть ему
+    просто: из архива скопировали один `.exe`, антивирус унёс файл в карантин,
+    установку перенесли на другую машину наполовину. Категорий тогда ноль,
+    `managed_folders` пуст — и уборка выглядит совершенно обычной: план
+    построен, файлы разложены по `Others/Misc`, жалоб никаких.
+
+    Отличить это от честно неопознанных загрузок нельзя ничем, а последствия
+    расходятся: `Others` в пустом `managed_folders` не значится, значит
+    «Переразложить старое» в неё не зайдёт и разгрести не поможет, пока файл
+    правил не вернётся на место.
+    """
+    (tmp_path / "config.json").write_text(json.dumps({
+        "downloads_path": str(tmp_path)}, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(tmp_path / "config.json")
+
+    assert any("rules.json" in p for p in config.problems), (
+        f"о пропавшем файле правил не сказано ни слова: {config.problems}")
+
+
+def test_rules_without_a_single_rule_are_reported(tmp_path):
+    """Файл на месте, а правил в нём нет — тот же исход, тот же разговор."""
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {}, "patterns": {}, "type_map": {"Documents": ["pdf"]},
+        "managed_folders": ["Others", "Documents"],
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "config.json").write_text(json.dumps({
+        "downloads_path": str(tmp_path)}, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(tmp_path / "config.json")
+
+    assert any("Others" in p and "правил" in p.lower() for p in config.problems), (
+        f"о пустых правилах не сказано ни слова: {config.problems}")
+
+
+def test_rules_from_patterns_alone_are_enough(tmp_path):
+    """Раскладка на одних шаблонах — рабочая настройка, а не поломка."""
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {}, "patterns": {"Скриншоты": [r"^screenshot"]},
+        "type_map": {"Images": ["png"]},
+        "managed_folders": ["Скриншоты", "Others", "Images", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "config.json").write_text(json.dumps({
+        "downloads_path": str(tmp_path)}, ensure_ascii=False), encoding="utf-8")
+
+    assert Config.load(tmp_path / "config.json").problems == []
+
+
+def test_network_folder_is_a_full_path(tmp_path):
+    r"""Сетевая папка (`\\сервер\общая\All_3d`) — законная настройка.
+
+    Проверка полноты пути не должна отрезать её заодно с `All_3d`: у UNC-пути
+    нет буквы диска, но место он задаёт однозначно, и от рабочей папки он не
+    считается.
+    """
+    config = make_3d_config(tmp_path, r"\\сервер\общая\All_3d")
+
+    assert external_3d_warning(config, send_3d_external=True) == ""
+    assert usable_3d_path(r"\\сервер\общая\All_3d")
+
+
+def test_path_from_the_root_of_the_current_drive_is_not_enough(tmp_path):
+    r"""`\All_3d` — папка в корне того диска, на котором программа сейчас.
+
+    Какого именно — зависит от того, откуда её запустили. Это ровно та же
+    неопределённость, что и у `All_3d`, только выглядит убедительнее.
+    """
+    config = make_3d_config(tmp_path, r"\All_3d")
+
+    assert "All_3d" in external_3d_warning(config, send_3d_external=True)

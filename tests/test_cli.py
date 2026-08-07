@@ -172,3 +172,62 @@ def test_tk_flag_still_opens_old_window(monkeypatch):
     main.main()
 
     assert seen == {"окно": "Tk"}
+
+
+# --- вынос 3D, которому некуда выносить ---
+
+
+def test_cli_says_when_3d_has_nowhere_to_go(tmp_path, monkeypatch, capsys):
+    """`--to3d` без пути молча раскладывал модели по обычным категориям.
+
+    Окно про такую настройку говорит строкой под планом, а консоль молчала:
+    предупреждал `Config.load` — и только по галочке, сохранённой в файле.
+    Флаг включает вынос поверх выключенной галочки, и тогда не предупреждал
+    никто. План в консоли от исправного при этом неотличим.
+    """
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "деталь.stl").write_text("x", encoding="utf-8")
+    cfg_path = write_config(tmp_path, {
+        "downloads_path": str(downloads),
+        "external_3d": {"enabled": False, "path": "", "extensions": ["stl"]},
+    })
+    monkeypatch.setattr(main, "CONFIG_PATH", cfg_path)
+
+    main.run_cli(None, do_apply=False, to_3d=True, deep=False)
+
+    assert "не указан" in capsys.readouterr().out
+
+
+def test_cli_says_when_3d_path_is_incomplete(tmp_path, monkeypatch, capsys):
+    """Путь без диска — это путь от рабочей папки, а не папка внутри загрузок."""
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "деталь.stl").write_text("x", encoding="utf-8")
+    cfg_path = write_config(tmp_path, {
+        "downloads_path": str(downloads),
+        "external_3d": {"enabled": True, "path": "All_3d", "extensions": ["stl"]},
+    })
+    monkeypatch.setattr(main, "CONFIG_PATH", cfg_path)
+
+    main.run_cli(None, do_apply=False, to_3d=None, deep=False)
+
+    out = capsys.readouterr().out
+    assert "All_3d" in out
+    assert "деталь.stl  ->  Others" in out, "модель должна остаться в загрузках"
+
+
+def test_cli_stays_quiet_when_3d_is_set_up(tmp_path, monkeypatch, capsys):
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "деталь.stl").write_text("x", encoding="utf-8")
+    cfg_path = write_config(tmp_path, {
+        "downloads_path": str(downloads),
+        "external_3d": {"enabled": True, "path": str(tmp_path / "All_3d"),
+                        "extensions": ["stl"]},
+    })
+    monkeypatch.setattr(main, "CONFIG_PATH", cfg_path)
+
+    main.run_cli(None, do_apply=False, to_3d=None, deep=False)
+
+    assert "не указан" not in capsys.readouterr().out

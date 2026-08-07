@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 from .classifier import base_name
 from .config import Config
 from .scanner import scan
-from .planner import build_plan, Move
+from .planner import build_plan, external_3d_warning, Move
 from .mover import apply
 from .util import rel_to, listing, report
 from . import ai
@@ -481,13 +481,18 @@ class GlassWindow(QWidget):
             if mv.note:
                 target = f"{target}   ({mv.note})"
             self.table.setItem(r, 1, QTableWidgetItem(target))
-        # Галочка «3D → отдельная папка» без пути не делает ничего: модели
-        # уезжают в обычные категории, и по плану это видно только тому, кто
-        # помнит, куда они должны были поехать. При старте о такой настройке
-        # предупреждает `Config`, но галочку жмут и посреди работы.
-        tail = ("   Путь для 3D не указан — модели поедут в обычные категории."
-                if self.to_3d.isChecked() and not self.path_3d_edit.text().strip()
-                else "")
+        # Галочка «3D → отдельная папка» без годного пути не делает ничего:
+        # модели уезжают в обычные категории, и по плану это видно только тому,
+        # кто помнит, куда они должны были поехать. При старте о такой настройке
+        # предупреждает `Config`, но галочку жмут и посреди работы, а путь
+        # правят прямо в поле рядом.
+        #
+        # Текст берётся общий на три интерфейса (`external_3d_warning`): своё
+        # условие здесь знало только про пустое поле и молчало о пути без
+        # диска — а тот не выключает вынос, а уводит модели в рабочую папку
+        # программы.
+        warning = external_3d_warning(self.config, self.to_3d.isChecked())
+        tail = f"   {warning}" if warning else ""
         self.status.setText(f"План готов: {len(self.moves)} шт.{tail}")
 
     def _save_overrides(self) -> str:
