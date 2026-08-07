@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QFileDialog, QDialog,
 )
 
+from .classifier import base_name
 from .config import Config
 from .scanner import scan
 from .planner import build_plan, Move
@@ -506,6 +507,17 @@ class GlassWindow(QWidget):
             return str(exc)
         return ""
 
+    def _has_rule(self, filename: str) -> bool:
+        """Есть ли для имени готовое правило в overrides.
+
+        Ищем так же, как `explain_category`: сначала точное имя, затем имя без
+        служебного номера. Правило `клип.mp4` покрывает и `клип (1).mp4` —
+        номер приписала сама программа при конфликте имён, файл от этого другим
+        не стал, и вопрос про него уже оплачен.
+        """
+        return bool(self.config.overrides.get(filename)
+                    or self.config.overrides.get(base_name(filename)))
+
     def run_ai(self):
         """Спрашивает DeepSeek про то же, что разбирает обычная уборка.
 
@@ -514,6 +526,12 @@ class GlassWindow(QWidget):
         дважды: запрос раздувался с десятка имён до тысячи, а правила для уже
         разложенных файлов оседали в overrides.json и перетасовывали папки,
         которые никто не просил трогать.
+
+        Имена, у которых правило уже есть, в запрос не уходят. Ответ модели их
+        всё равно не трогает (`_ai_done` бережёт решение, принятое руками), а
+        деньги и минуты за них платились наравне со всеми: на разобранной папке
+        второе нажатие «✨ИИ» превращалось в оплаченную пустышку — запрос на
+        сотню имён и «ИИ разложил 0 шт.» в ответ.
 
         Пустое поле пути отбивается отдельно: `Path("")` — это текущая папка, и
         `is_dir()` на ней отвечает True. Без этой проверки ИИ разбирал папку
@@ -539,16 +557,21 @@ class GlassWindow(QWidget):
         # будет тот же и распространится на оба файла. Раньше повторы уходили в
         # запрос по разу на файл — лишние деньги, лишние пачки, и счёт
         # «спрашиваю по N именам» из-за них врал.
-        names = list(dict.fromkeys(f.name for f in files))
+        seen = list(dict.fromkeys(f.name for f in files))
+        names = [name for name in seen if not self._has_rule(name)]
+        covered = len(seen) - len(names)
         if not names:
-            self.status.setText("Нечего разбирать.")
+            self.status.setText(
+                f"Нечего разбирать: у всех имён уже есть правила ({covered})."
+                if covered else "Нечего разбирать.")
             return
         cats = list(self.config.categories.keys()) + [self.config.fallback_category]
         # Сколько имён ушло в запрос. Ответ приходит один, без вопроса, а
         # посчитать оставшихся без решения можно только сравнив одно с другим.
         self._ai_asked = len(names)
         self.ai_btn.setEnabled(False)
-        self.status.setText(f"Спрашиваю DeepSeek по {len(names)} именам…")
+        skipped = f" ({covered} уже с правилами — не спрашиваем)" if covered else ""
+        self.status.setText(f"Спрашиваю DeepSeek по {len(names)} именам…{skipped}")
         self._worker = _AiWorker(
             names, cats, key, self.config.category_hints,
             self.config.fallback_category)

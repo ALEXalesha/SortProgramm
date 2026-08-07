@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .config import Config
+from .config import Config, folder_key, folder_keys
 from .planner import Move, external_3d_path
 
 
@@ -99,15 +99,19 @@ def _cleanup_emptied(performed: list[dict[str, str]], config: Config) -> None:
 
     Вверх поднимаемся до корня загрузок или до самой папки 3D — их не трогаем
     никогда, это чужая территория, а не созданный программой каркас.
+
+    Своё имя опознаётся через `folder_key`, как и при обходе: `Медиа` и `медиа`
+    на Windows — одна папка, и уборка спотыкалась о регистр ровно там же, где
+    спотыкался `scanner`.
     """
     root = Path(config.downloads_path)
     external = external_3d_path(config)
     stop = {root} if external is None else {root, external}
-    managed = set(config.managed_folders)
+    managed = folder_keys(config.managed_folders)
     for entry in performed:
         folder = Path(entry["src"]).parent
         while (folder not in stop and folder.is_dir()
-               and (folder.name in managed or folder.parent == external)):
+               and (folder_key(folder.name) in managed or folder.parent == external)):
             try:
                 if any(folder.iterdir()):
                     break

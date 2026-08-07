@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +48,32 @@ USER_KEYS = ("downloads_path", "external_3d")
 
 
 _SEPARATORS = re.compile(r"[\\/]")
+
+
+def folder_key(name: str) -> str:
+    """Имя папки в виде, пригодном для сравнения с тем, что лежит на диске.
+
+    Windows считает `Медиа` и `медиа` одной и той же папкой, а `mkdir` не
+    переименовывает уже существующую: стоит ей появиться раньше в другом
+    регистре — от прошлой версии правил, от руки, от другой программы, — и
+    файлы молча укладываются в неё. Снаружи всё в порядке: план показан, файлы
+    разложены. А сверка с `managed_folders` шла строка в строку, поэтому такая
+    папка переставала быть своей: «Переразложить старое» в неё не заходило,
+    новые категории до лежащего внутри не доезжали никогда, и пустой её никто
+    не убирал. Чёрная дыра ровно того вида, о котором предупреждает
+    `_check_managed`, — только заметить её нечем.
+
+    `os.path.normcase` делает нужное и ровно там, где нужно: на Windows
+    приводит регистр, на Linux и macOS оставляет имя как есть — там `Медиа` и
+    `медиа` и правда разные папки, и заходить во вторую было бы уже вторжением
+    в чужое.
+    """
+    return os.path.normcase(name)
+
+
+def folder_keys(names) -> set[str]:
+    """Набор имён папок для сравнения (см. `folder_key`)."""
+    return {folder_key(name) for name in names}
 
 
 def _is_folder_name(value: str) -> bool:
@@ -161,6 +188,38 @@ def _rule_map(raw, where: str, key: str, problems: list[str]) -> dict[str, list[
     return good
 
 
+def _pattern_map(raw, where: str, key: str, problems: list[str]) -> dict[str, list[str]]:
+    """Раздел `patterns`: то же, что `_rule_map`, плюс проверка самих выражений.
+
+    Регулярку пишут руками, и опечатка в ней — лишняя скобка, незакрытый класс,
+    забытая фигурная скобка — не роняет ничего: `match_pattern` ловит `re.error`
+    и идёт дальше. В этом и беда. Снаружи битое выражение выглядит как исправное
+    правило, которое почему-то ни разу не сработало: скриншоты уезжают в Others,
+    план построен, жалоб нет. Проверить нечем — пометку «шаблон» предпросмотр
+    ставит только когда шаблон подошёл, а «не опознан» ничем не отличается от
+    честного «такого правила и не было».
+
+    Битое выражение поэтому выбрасываем здесь и говорим о нём вслух. Соседние
+    выражения той же категории остаются: одна опечатка не должна уносить с собой
+    работающие шаблоны. Проверку в `match_pattern` не снимаем — конфиг собирают
+    и напрямую, из тестов и из CLI.
+    """
+    good = _rule_map(raw, where, key, problems)
+    for name, expressions in good.items():
+        checked: list[str] = []
+        for expression in expressions:
+            try:
+                re.compile(expression)
+            except re.error as exc:
+                problems.append(
+                    f"{where}: {key} → «{name}»: выражение «{expression}» "
+                    f"не разбирается ({exc}). Пропущено.")
+                continue
+            checked.append(expression)
+        good[name] = checked
+    return good
+
+
 def _text_map(
     raw, where: str, key: str, problems: list[str], folders: bool = False
 ) -> dict[str, str]:
@@ -250,14 +309,15 @@ def _check_managed(
     """
     if not managed:
         return
-    known = set(managed)
+    known = folder_keys(managed)
     seen: set[str] = set()
     for kind, names in (("категория", categories), ("тип", types)):
         for name in names:
             for part in _SEPARATORS.split(name):
-                if not part or part in known or part in seen:
+                key = folder_key(part)
+                if not part or key in known or key in seen:
                     continue
-                seen.add(part)
+                seen.add(key)
                 problems.append(
                     f"{where}: {kind} «{part}» не указана в managed_folders. "
                     "Файлы в неё разложатся, но «Переразложить старое» в эту "
@@ -322,7 +382,7 @@ class Config:
         # Разделы разбираются по порядку: жалобы в `problems` должны идти в том
         # же порядке, в каком они лежат в файле, — так их проще искать глазами.
         categories = _rule_map(rules.get("categories"), rules_name, "categories", problems)
-        patterns = _rule_map(rules.get("patterns"), rules_name, "patterns", problems)
+        patterns = _pattern_map(rules.get("patterns"), rules_name, "patterns", problems)
         category_hints = _text_map(
             rules.get("category_hints"), rules_name, "category_hints", problems)
         type_map = _rule_map(rules.get("type_map"), rules_name, "type_map", problems)

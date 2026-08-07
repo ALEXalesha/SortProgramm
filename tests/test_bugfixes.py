@@ -1,5 +1,6 @@
 """Проверки на найденные баги. Каждый тест — воспроизведение конкретной поломки."""
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -1007,6 +1008,112 @@ def test_3d_switched_off_without_path_stays_quiet(tmp_path):
         "downloads_path": str(tmp_path / "dl"),
         "external_3d": {"enabled": False, "path": ""},
     }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(tmp_path / "config.json")
+
+    assert config.problems == []
+
+
+# --- своя папка, отличающаяся регистром ---
+
+case_insensitive = pytest.mark.skipif(
+    os.path.normcase("A") == "A", reason="файловая система различает регистр")
+
+
+@case_insensitive
+def test_deep_scan_enters_managed_folder_written_in_other_case(tmp_path):
+    """Windows считает `Медиа` и `медиа` одной папкой, а сортировщик — разными.
+
+    `mkdir` не переименовывает уже существующую папку: стоит ей появиться
+    раньше в другом регистре — от прошлой версии правил, от руки, от другой
+    программы, — и файлы молча укладываются в неё. Снаружи всё в порядке:
+    план показан, файлы разложены. Но `managed_folders` сверялся строка в
+    строку, поэтому такая папка переставала быть своей: «Переразложить старое»
+    в неё не заходило, новые категории до лежащего внутри не доезжали никогда,
+    и пустой её никто не убирал. Чёрная дыра ровно того вида, о котором
+    предупреждает `_check_managed`, — только заметить её нечем.
+    """
+    config = make_config(tmp_path)
+    touch(tmp_path / "медиа" / "videos" / "клип.mp4")
+
+    found = scan(tmp_path, config, deep=True)
+
+    assert [p.name for p in found] == ["клип.mp4"], (
+        "переразложение не увидело файл в своей же папке, "
+        "написанной другим регистром")
+
+
+@case_insensitive
+def test_cleanup_removes_emptied_folder_written_in_other_case(tmp_path):
+    """Уборка пустых папок спотыкалась о регистр так же, как обход."""
+    config = make_config(tmp_path)
+    src = touch(tmp_path / "медиа" / "videos" / "отчёт.pdf")
+
+    apply([Move(src, tmp_path / "Код" / "Documents" / "отчёт.pdf")],
+          config, dry_run=False)
+
+    assert not (tmp_path / "медиа").exists(), (
+        "опустевшая папка программы осталась лежать из-за регистра")
+
+
+@case_insensitive
+def test_foreign_folder_is_still_not_entered(tmp_path):
+    """Смягчение сравнения не должно открыть дорогу в чужие папки."""
+    config = make_config(tmp_path)
+    touch(tmp_path / "мир minecraft" / "level.dat")
+
+    found = scan(tmp_path, config, deep=True)
+
+    assert found == []
+
+
+# --- опечатка в регулярке ---
+
+
+def write_rules_with_patterns(root, patterns):
+    (root / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "patterns": patterns,
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Скриншоты", "Others", "Videos", "Misc"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    }, ensure_ascii=False), encoding="utf-8")
+    (root / "config.json").write_text(json.dumps({
+        "downloads_path": str(root / "dl")}, ensure_ascii=False), encoding="utf-8")
+
+
+def test_broken_regular_expression_is_reported(tmp_path):
+    """Опечатка в шаблоне не роняла ничего — и в этом вся беда.
+
+    `match_pattern` ловит `re.error` и идёт дальше, поэтому битое выражение
+    выглядит как исправное правило, которое почему-то ни разу не сработало:
+    скриншоты уезжают в Others, план построен, жалоб нет. Проверить нечем —
+    пометку «шаблон» в предпросмотре пишут только когда шаблон подошёл.
+    """
+    write_rules_with_patterns(tmp_path, {"Скриншоты": [r"^(Снимок экрана \d{4}-\d{2}-\d{2}"]})
+
+    config = Config.load(tmp_path / "config.json")
+
+    assert any("Снимок экрана" in p for p in config.problems), (
+        f"о сломанном шаблоне не сказано ни слова: {config.problems}")
+    assert config.patterns["Скриншоты"] == []
+
+
+def test_working_expression_next_to_a_broken_one_survives(tmp_path):
+    """Одна опечатка не должна уносить с собой соседние шаблоны."""
+    write_rules_with_patterns(
+        tmp_path, {"Скриншоты": [r"^(Снимок экрана \d{4}-\d{2}-\d{2}", r"^screenshot"]})
+
+    config = Config.load(tmp_path / "config.json")
+
+    assert config.patterns["Скриншоты"] == [r"^screenshot"]
+    assert explain_category("screenshot_01.png", "", config) == ("Скриншоты", "шаблон")
+
+
+def test_correct_patterns_stay_quiet(tmp_path):
+    """Исправные шаблоны не должны собирать жалобы на ровном месте."""
+    write_rules_with_patterns(tmp_path, {"Медиа": [r"^\d{4}-\d{4}\.mp4$"]})
 
     config = Config.load(tmp_path / "config.json")
 

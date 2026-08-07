@@ -4,7 +4,7 @@ from __future__ import annotations
 import fnmatch
 from pathlib import Path
 
-from .config import Config
+from .config import Config, folder_key, folder_keys
 
 
 def _is_ignored(name: str, patterns: list[str]) -> bool:
@@ -22,11 +22,16 @@ def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
 
     Папки, которых нет в config.managed_folders, не обходятся никогда — это
     чужие папки программ и игр. Их программа не двигает и не разбирает.
+
+    Своё имя опознаётся через `folder_key`: на Windows `Медиа` и `медиа` — одна
+    и та же папка, и сверка строка в строку делала из второй чёрную дыру.
     """
     root = Path(root)
     found: list[Path] = []
     if not root.is_dir():
         return found
+
+    managed = folder_keys(config.managed_folders)
 
     # Куда уже заходили — по настоящему пути, а не по тому, каким пришли.
     # Общий на весь обход: две управляемые папки могут оказаться стыками на
@@ -45,7 +50,7 @@ def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
         if entry.is_file():
             if not _is_ignored(entry.name, config.ignore):
                 found.append(entry)
-        elif deep and entry.is_dir() and entry.name in config.managed_folders:
+        elif deep and entry.is_dir() and folder_key(entry.name) in managed:
             found.extend(_walk_managed(entry, config, visited))
 
     return found
@@ -91,7 +96,7 @@ def _walk_managed(folder: Path, config: Config, visited: set[Path]) -> list[Path
     списке ошибок как настоящая потеря, и убрать её оттуда можно было только
     руками через проводник.
     """
-    managed = set(config.managed_folders)
+    managed = folder_keys(config.managed_folders)
     files: list[Path] = []
     stack = [folder]
     while stack:
@@ -106,7 +111,7 @@ def _walk_managed(folder: Path, config: Config, visited: set[Path]) -> list[Path
             continue
         for entry in entries:
             if entry.is_dir():
-                if entry.name in managed:
+                if folder_key(entry.name) in managed:
                     stack.append(entry)
             elif entry.is_file() and not _is_ignored(entry.name, config.ignore):
                 files.append(entry)

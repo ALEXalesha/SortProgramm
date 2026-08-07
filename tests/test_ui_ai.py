@@ -296,3 +296,49 @@ def test_ai_asks_each_name_once(window, tmp_path):
 
     assert FakeWorker.seen.count("новый.mp4") == 1, (
         f"одно имя ушло в запрос дважды: {FakeWorker.seen}")
+
+
+def test_ai_does_not_ask_about_names_that_already_have_a_rule(window):
+    """За имена с готовым правилом платили, а ответы про них выбрасывали.
+
+    Ответ модели больше не затирает правило, поставленное руками, — и это
+    правильно. Но спрашивать про такие имена кнопка не перестала: они уходили
+    в запрос вместе со всеми, за них шли деньги и минуты ожидания, а `_ai_done`
+    отбрасывал ответ целиком. На разобранной папке второе нажатие «✨ИИ» стало
+    оплаченной пустышкой: «ИИ разложил 0 шт.» после запроса на сотню имён.
+    """
+    window.config.overrides["новый.mp4"] = "Игры"
+
+    window.run_ai()
+
+    assert FakeWorker.seen is None, (
+        f"спросили про имя, у которого уже есть правило: {FakeWorker.seen}")
+    assert "правил" in window.status.text(), (
+        f"почему не спрашивали — не сказано: {window.status.text()!r}")
+
+
+def test_ai_still_asks_about_the_rest(window):
+    """Имена без правила должны уходить в запрос как раньше."""
+    window.config.overrides["новый.mp4"] = "Игры"
+    window.resort.setChecked(True)
+
+    window.run_ai()
+
+    assert FakeWorker.seen == ["старый.mp4"]
+
+
+def test_ai_skips_names_covered_by_a_rule_without_the_dedup_number(window):
+    """Правило `клип.mp4` покрывает и `клип (1).mp4` — спрашивать не о чем.
+
+    Номер приписывает сама программа при конфликте имён, и `explain_category`
+    ищет правило по имени без него. Значит, и вопрос про такое имя уже оплачен.
+    """
+    downloads = Path(window.config.downloads_path)
+    (downloads / "новый.mp4").unlink()
+    (downloads / "новый (1).mp4").write_text("x", encoding="utf-8")
+    window.config.overrides["новый.mp4"] = "Игры"
+
+    window.run_ai()
+
+    assert FakeWorker.seen is None, (
+        f"спросили про имя, накрытое правилом без номера: {FakeWorker.seen}")
