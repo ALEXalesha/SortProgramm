@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .classifier import classify, explain_category, extension_of
-from .config import Config, usable_3d_path
+from .config import Config, path_3d_reason, usable_3d_path
 from .scanner import scan
 
 TEXT_EXTENSIONS = {"txt", "md", "csv"}
@@ -89,16 +89,14 @@ def external_3d_warning(config: Config, send_3d_external: bool) -> str:
     а обычная настройка «внешней папкой не пользуемся».
     """
     raw = config.external_3d.get("path", "") if isinstance(config.external_3d, dict) else ""
-    if usable_3d_path(raw):
+    reason = path_3d_reason(raw)
+    if not reason:
         return ""
-    if not raw:
-        if not send_3d_external:
-            return ""
-        return "Путь для 3D не указан — модели поедут в обычные категории."
-    tail = (" Модели поедут в обычные категории." if send_3d_external
-            else " Папка 3D не разбирается.")
-    return (f"Путь для 3D «{raw}» неполный — по нему не видно ни диска, ни папки."
-            + tail)
+    if not raw and not send_3d_external:
+        return ""
+    tail = ("Модели поедут в обычные категории." if send_3d_external
+            else "Папка 3D не разбирается.")
+    return f"Вынос 3D: {reason}. {tail}"
 
 
 def _external_3d_extensions(config: Config) -> set[str]:

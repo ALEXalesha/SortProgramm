@@ -9,7 +9,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from sorter.config import Config
+from sorter.config import Config, path_3d_reason
 from sorter.planner import build_plan, external_3d_warning
 from sorter.mover import apply
 from sorter.util import rel_to
@@ -55,8 +55,12 @@ def run_cli(path: str | None, do_apply: bool, to_3d: bool | None, deep: bool) ->
     # консоль молчала — предупреждал `Config.load`, и только по галочке,
     # сохранённой в файле. `--to3d` включает вынос поверх выключенной галочки,
     # и тогда не предупреждал никто. План при этом от исправного неотличим.
+    # Про сохранённую галочку с негодным путём уже сказано выше, разбором
+    # настроек. Повторять ту же причину второй фразой подряд незачем — общий
+    # кусок текста даёт `config.path_3d_reason`, по нему и сверяемся.
     warning = external_3d_warning(config, to_3d)
-    if warning:
+    if warning and not any(path_3d_reason(config.external_3d.get("path")) in p
+                           for p in config.problems):
         print(f"! {warning}\n")
 
     # deep=False — только корень загрузок; deep=True — переразложить и то,

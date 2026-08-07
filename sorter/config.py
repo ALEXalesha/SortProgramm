@@ -96,6 +96,23 @@ def usable_3d_path(raw) -> bool:
     return isinstance(raw, str) and bool(raw) and Path(raw).is_absolute()
 
 
+def path_3d_reason(raw) -> str:
+    """Что не так с путём внешней папки 3D. Пустая строка — всё в порядке.
+
+    Причина живёт здесь одна на всех, потому что говорят о ней в двух местах:
+    при чтении настроек (жалоба на файл, её показывают окна при старте) и при
+    построении плана (`planner.external_3d_warning` — про этот конкретный
+    прогон, где галочку мог перебить флаг `--to3d`). Консоль печатает и то, и
+    другое подряд, и без общего куска текста она повторяла бы одно и то же
+    двумя разными фразами.
+    """
+    if usable_3d_path(raw):
+        return ""
+    if not raw:
+        return "путь к папке не указан"
+    return f"путь «{raw}» неполный — по нему не видно ни диска, ни папки"
+
+
 def _is_folder_name(value: str) -> bool:
     """Годится ли строка как имя папки внутри загрузок.
 
@@ -173,12 +190,10 @@ def _clean_3d(raw, problems: list[str]) -> dict:
     # Неполный путь до этой правки вёл себя иначе и хуже: он работал, но не
     # туда. Теперь он приравнен к «пути нет» — но сказать о нём надо отдельно,
     # потому что в поле ввода такой путь на вид совершенно исправен.
-    if data.get("enabled") and not usable_3d_path(data.get("path")):
-        raw = data.get("path")
-        why = (f"путь «{raw}» неполный — по нему не видно ни диска, ни папки"
-               if raw else "путь к папке не указан")
+    reason = path_3d_reason(data.get("path"))
+    if data.get("enabled") and reason:
         problems.append(
-            f"config.json: вынос 3D включён, но {why}. "
+            f"config.json: вынос 3D включён, но {reason}. "
             "Модели поедут в обычные категории.")
     return data
 
