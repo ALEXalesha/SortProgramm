@@ -160,3 +160,86 @@ def test_every_external_3d_extension_is_a_3d_keyword(cfg):
     words = {w.lower() for w in cfg.categories["3D"] if w.startswith(".")}
     missing = {f".{e.lower()}" for e in cfg.external_3d.get("extensions", [])} - words
     assert not missing, f"расширения выноса 3D нет в словах категории: {missing}"
+
+
+# --- слова-обрубки, забиравшие соседей по подстроке ---
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        # `фон` стояло в словах категории «3D» и ловилось подстрокой, то есть
+        # хвостом любого слова: телефон, микрофон, диктофон — и началом:
+        # фонарь, фонд, фонтан, фонотека. Для русской папки загрузок это не
+        # редкий случай, а ежедневный, и раскладка при этом честно пишет
+        # «слово» — та самая пометка, которой README велит доверять.
+        ("инструкция_телефон.pdf", "Others"),
+        ("Телефонный справочник.xlsx", "Others"),
+        ("микрофон-обзор.mp4", "Others"),
+        ("Фонд помощи.docx", "Others"),
+        ("фонотека.m3u", "Others"),
+        # `иво` из «Учёбы» забирало «живой» и «оливье»
+        ("живой концерт.mp3", "Others"),
+        ("оливье рецепт.txt", "Others"),
+        # `sim` из «Кода» забирало assimp и basim
+        ("assimp-5.4.zip", "Others"),
+        ("basim.png", "Others"),
+    ],
+)
+def test_short_stem_does_not_grab_the_middle_of_a_word(cfg, name, expected):
+    assert category(cfg, name) == expected
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        # …а сам смысл слова сохранён: границы даёт `patterns`, потому что
+        # ключевые слова умеют только вхождение подстроки.
+        ("фон.png", "3D"),
+        ("фон_лес.jpg", "3D"),
+        ("студийный фон.hdr", "3D"),
+        ("фон2.png", "3D"),
+        ("ИВО 2026.pdf", "Учёба"),
+        ("ИВО2026.pdf", "Учёба"),
+        ("виво разбор.pdf", "Учёба"),
+        ("зиво.pdf", "Учёба"),
+        ("os_sim.py", "Код"),
+        ("sim-city.exe", "Код"),
+    ],
+)
+def test_whole_word_stem_still_wins(cfg, name, expected):
+    assert category(cfg, name) == expected
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        # Шаблоны бьют раньше ключевых слов, поэтому слова с границами
+        # переехали в конец `patterns` — за якорные выражения. Иначе
+        # безымянный `фон` в имени снимка забирал бы снимок себе.
+        ("Снимок экрана 2026 фон.png", "Скриншоты"),
+        ("photo_2026-06-19_20-03-13 фон.jpg", "Скриншоты"),
+        # …а сами якорные выражения от перестановки не сдвинулись
+        ("0001-0250.mp4", "3D"),
+        ("0606.mp4", "Медиа"),
+        ("audio-2026-01-02-lecture.mp3", "Медиа"),
+    ],
+)
+def test_anchored_patterns_still_win_over_word_patterns(cfg, name, expected):
+    assert category(cfg, name) == expected
+
+
+def test_mid_word_match_is_still_allowed_where_it_is_right(cfg):
+    """Границы слова — точечная правка, а не общее правило.
+
+    В настоящих загрузках подстрока в середине слова почти всегда права:
+    `ChromeSetup.exe`, `48RXF1.scs`, `BearVPN_2.7.0.exe`, `LegacyLauncher.exe`,
+    `WindowsAppRuntimeInstall-x64.exe`, `3DBenchy_PLA0.25.mp4` — всё это
+    опознано хвостом слова и опознано верно. Поэтому границы получили ровно
+    три обрубка, а не весь список.
+    """
+    assert category(cfg, "ChromeSetup.exe") == "Программы"
+    assert category(cfg, "48RXF1.scs") == "Игры"
+    assert category(cfg, "BearVPN_2.7.0.exe") == "Программы"
+    assert category(cfg, "LegacyLauncher.exe") == "Игры"
+    assert category(cfg, "WindowsAppRuntimeInstall-x64.exe") == "Программы"
