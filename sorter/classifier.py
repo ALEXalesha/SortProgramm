@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from .config import Config
+from .config import Config, extension_key, name_key
 
 
 # Служебный номер, который программа приписывает при конфликте имён:
@@ -38,6 +38,42 @@ def base_name(filename: str) -> str:
     return _DEDUP_SUFFIX.sub("", stem) + dot + extension
 
 
+def find_override(overrides: dict[str, str], filename: str) -> str | None:
+    """Ручное правило для имени файла. None, если правила нет.
+
+    Ищется в четыре захода: точное имя, имя без служебного номера, и то же
+    самое по правилам файловой системы (`name_key`). Точное совпадение всегда
+    важнее — если в файле лежат две записи, срабатывает та, что написана как
+    сам файл.
+
+    Регистр приходится смягчать по той же причине, по какой его смягчили для
+    папок: на Windows `Отчёт.pdf` и `отчёт.pdf` — один и тот же файл, а сверка
+    шла строка в строку. Ручное правило пишут руками, глядя на имя в
+    проводнике, а проводник показывает его как хочет — с заглавной, целиком
+    капсом после переименования из другой программы, — и ключ, набранный не тем
+    регистром, не совпадал ни с чем. Правило при этом выглядит совершенно
+    рабочим: строка в `overrides.json` есть, ошибок нет, а файл молча уезжает
+    по ключевым словам или в `Others`, и в предпросмотре у него честная пометка
+    «слово». Отличить это от «правила и не было» нельзя ничем.
+
+    На Linux и macOS `name_key` ничего не меняет: там это и правда разные
+    файлы, и путать их было бы уже вторжением в чужое.
+
+    Перебор по всему словарю нестрашен: он случается только когда точного
+    совпадения нет, а правил в `overrides.json` сотни, не миллионы.
+    """
+    stripped = base_name(filename)
+    for key in (filename, stripped):
+        value = overrides.get(key)
+        if value:
+            return value
+    wanted = {name_key(filename), name_key(stripped)}
+    for key, value in overrides.items():
+        if value and name_key(key) in wanted:
+            return value
+    return None
+
+
 def extension_of(filename: str) -> str:
     """Расширение в нижнем регистре без точки. Пустая строка, если его нет."""
     name = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
@@ -49,16 +85,30 @@ def extension_of(filename: str) -> str:
 def match_type(extension: str, type_map: dict[str, list[str]], fallback: str = "Misc") -> str:
     """Тип файла по карте расширение→тип. Иначе fallback.
 
-    Регистр не важен с обеих сторон. Карту типов README предлагает править
-    руками, и `"Documents": ["PDF"]` там появляется само собой — а сравнение
-    шло с приведённым к нижнему регистру расширением против списка как есть.
+    Ни регистр, ни точка, ни пробелы по краям не важны с обеих сторон
+    (`extension_key`). Карту типов README предлагает править руками, и
+    `"Documents": ["PDF"]` там появляется само собой — а сравнение шло с
+    приведённым к нижнему регистру расширением против списка как есть.
     Совпадений не было, и все документы молча уезжали в `Misc`: раскладка
-    неверная, жалоб никаких. Ключевые слова категорий и расширения внешней
-    папки 3D приводятся к одному регистру давно, карта типов — нет.
+    неверная, жалоб никаких.
+
+    Регистр починили, а точку — нет, хотя приходит она тем же путём и тем же
+    исходом: в одном проекте живут три написания одного и того же (слова
+    категорий с точкой, `type_map` без, `external_3d.extensions` без), и
+    `".pdf"`, написанное здесь, не совпадало с `"pdf"` ни разу. Список выноса
+    3D это прощает давно — теперь и карта типов.
+
+    Пустой ключ не совпадает ни с чем нарочно. У файла без расширения
+    `extension_of` отдаёт пустую строку, и запись `""` (или из одних пробелов,
+    или одна точка) выдавала бы таким файлам настоящий тип вместо запасного.
+    Разбор правил такую запись выбрасывает, но конфиг собирают и напрямую — из
+    тестов, из CLI, — и проверять там некому.
     """
-    ext = extension.lower()
+    ext = extension_key(extension)
+    if not ext:
+        return fallback
     for type_name, extensions in type_map.items():
-        if any(ext == str(e).lower() for e in extensions):
+        if any(ext == extension_key(e) for e in extensions):
             return type_name
     return fallback
 
@@ -149,7 +199,7 @@ def explain_category(filename: str, content: str, config: Config) -> tuple[str, 
     смотреть. Тот же случай, что у выноса 3D: причина названа, но не та.
     """
     name = base_name(filename)
-    override = config.overrides.get(filename) or config.overrides.get(name)
+    override = find_override(config.overrides, filename)
     if override:
         return override, BY_RULE
 

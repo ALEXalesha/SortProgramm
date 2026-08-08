@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QFileDialog, QDialog,
 )
 
-from .classifier import base_name
+from .classifier import find_override
 from .config import Config
 from .scanner import scan
 from .planner import build_plan, external_3d_warning, goes_by_extension, Move
@@ -520,13 +520,17 @@ class GlassWindow(QWidget):
     def _has_rule(self, filename: str) -> bool:
         """Есть ли для имени готовое правило в overrides.
 
-        Ищем так же, как `explain_category`: сначала точное имя, затем имя без
-        служебного номера. Правило `клип.mp4` покрывает и `клип (1).mp4` —
-        номер приписала сама программа при конфликте имён, файл от этого другим
-        не стал, и вопрос про него уже оплачен.
+        Ищем ровно тем же способом, каким его найдёт разбор
+        (`classifier.find_override`): точное имя, имя без служебного номера и
+        то же самое по правилам файловой системы. Правило `клип.mp4` покрывает
+        и `клип (1).mp4` — номер приписала сама программа при конфликте имён,
+        файл от этого другим не стал, и вопрос про него уже оплачен.
+
+        Расходиться с разбором тут нельзя ни в какую сторону: спросим лишнего —
+        заплатим за правило, которое уже есть; не спросим нужного — файл
+        останется неразобранным, а окно отчитается «нечего разбирать».
         """
-        return bool(self.config.overrides.get(filename)
-                    or self.config.overrides.get(base_name(filename)))
+        return find_override(self.config.overrides, filename) is not None
 
     def run_ai(self):
         """Спрашивает DeepSeek про то же, что разбирает обычная уборка.

@@ -50,8 +50,8 @@ USER_KEYS = ("downloads_path", "external_3d")
 _SEPARATORS = re.compile(r"[\\/]")
 
 
-def folder_key(name: str) -> str:
-    """Имя папки в виде, пригодном для сравнения с тем, что лежит на диске.
+def name_key(name: str) -> str:
+    """Имя файла или папки в виде, пригодном для сравнения с тем, что на диске.
 
     Windows считает `Медиа` и `медиа` одной и той же папкой, а `mkdir` не
     переименовывает уже существующую: стоит ей появиться раньше в другом
@@ -63,12 +63,22 @@ def folder_key(name: str) -> str:
     не убирал. Чёрная дыра ровно того вида, о котором предупреждает
     `_check_managed`, — только заметить её нечем.
 
+    Правило это задаёт файловая система, а не то, папка перед нами или файл,
+    поэтому им же сверяются ключи `overrides.json` (`classifier.find_override`):
+    ручное правило пишут, глядя на имя в проводнике, а проводник показывает его
+    как хочет.
+
     `os.path.normcase` делает нужное и ровно там, где нужно: на Windows
     приводит регистр, на Linux и macOS оставляет имя как есть — там `Медиа` и
-    `медиа` и правда разные папки, и заходить во вторую было бы уже вторжением
+    `медиа` и правда разные имена, и считать их одним было бы уже вторжением
     в чужое.
     """
     return os.path.normcase(name)
+
+
+def folder_key(name: str) -> str:
+    """Имя папки для сравнения. То же, что `name_key`, — правило задаёт ФС."""
+    return name_key(name)
 
 
 def folder_keys(names) -> set[str]:
@@ -113,6 +123,21 @@ def path_3d_reason(raw) -> str:
     return f"путь «{raw}» неполный — по нему не видно ни диска, ни папки"
 
 
+def extension_key(value) -> str:
+    """Расширение в том виде, в каком его отдаёт `classifier.extension_of`.
+
+    То есть без точки, без пробелов по краям и в нижнем регистре. Одно место
+    на всех, кто сверяет расширения: `type_map`, `external_3d.extensions` и
+    проверка правил-призраков. Раньше такое приведение знал только список
+    выноса 3D, а `match_type` сравнивал строка в строку, и `".pdf"`, написанное
+    в `type_map` после правки руками, не совпадало с `"pdf"` ни разу — все
+    документы молча уезжали в запасной тип. Тот же исход, что у `"PDF"`
+    заглавными до починки регистра, и приходит он тем же путём: три написания
+    одного и того же живут в этом проекте рядом.
+    """
+    return str(value).strip().lstrip(".").lower()
+
+
 def clean_extensions(raw) -> list[str]:
     """Расширения в том виде, в каком их отдаёт `classifier.extension_of`.
 
@@ -132,14 +157,14 @@ def clean_extensions(raw) -> list[str]:
     """
     good: list[str] = []
     for value in raw:
-        text = str(value).strip().lstrip(".").lower()
+        text = extension_key(value)
         if text and text not in good:
             good.append(text)
     return good
 
 
-def _is_folder_name(value: str) -> bool:
-    """Годится ли строка как имя папки внутри загрузок.
+def folder_name_problem(value: str, noun: str = "имя папки") -> str:
+    """Почему строка не годится именем папки. Пустая строка — годится.
 
     Категория и тип уходят прямо в `root / категория / тип`, а `Path` устроен
     так, что абсолютный кусок отбрасывает всё слева: `Path("D:/Загрузки") /
@@ -149,14 +174,35 @@ def _is_folder_name(value: str) -> bool:
     самое. Это худший исход из возможных: программа отчитывается об успешной
     сортировке, а файлов в загрузках больше нет и искать их негде.
 
+    Второй случай — имя, которое файловая система запишет не так, как написано.
+    Windows отрезает у имени папки хвостовые пробелы и точки, и обе половины
+    этого выходят плохо. `"Учёба "`: план строится обычный, а перемещения
+    падают все до одного — `mkdir` создаёт `Учёба`, `shutil.move` ищет
+    `Учёба \\Documents` и получает `[WinError 3]`; в загрузках остаётся
+    неразобранный файл и пустая папка, которую никто не просил. `"Учёба."` —
+    ещё хуже, потому что тише: перемещение проходит, отчёт рапортует успех, а
+    файлы лежат в `Учёба`, которой нет ни в `managed_folders`, ни где-либо ещё.
+    Своей она не считается, «Переразложить старое» в неё не заходит, пустой её
+    не убирает — чёрная дыра, и предупредить о ней нечем: имя-то в правилах
+    написано, проверка `_check_managed` видит именно его.
+
+    Имя из одних пробелов не создаётся вовсе и попадает сюда же.
+
     Вложенная категория (`Учёба/2026`) — обычное дело, её не трогаем.
     """
     parts = [p for p in _SEPARATORS.split(value) if p]
-    if not parts or value[0] in "\\/":
-        return False
-    if ":" in parts[0]:  # буква диска
-        return False
-    return ".." not in parts and "." not in parts
+    if (not parts or value[0] in "\\/" or ":" in parts[0]  # буква диска
+            or ".." in parts or "." in parts):
+        return f"это путь, а не {noun}"
+    if any(not part.strip() or part != part.rstrip(" .") for part in parts):
+        return (f"это не {noun}: хвостовые пробелы и точки файловая система "
+                "отрезает, и папка получится другая")
+    return ""
+
+
+def _is_folder_name(value: str) -> bool:
+    """Годится ли строка как имя папки внутри загрузок (см. `folder_name_problem`)."""
+    return not folder_name_problem(value)
 
 
 def _read_json(path: Path, problems: list[str]) -> dict | None:
@@ -226,6 +272,30 @@ def _clean_3d(raw, problems: list[str]) -> dict:
         problems.append(
             "config.json: external_3d.path — не строка. Путь к папке 3D сброшен.")
         data["path"] = ""
+    elif isinstance(path, str):
+        # Пробелы по краям — та же история, что у папки загрузок, только исход
+        # другой и хуже. Спереди: `Path(" C:/All_3d").is_absolute()` — False, и
+        # человек читает «по этому пути не видно ни диска», глядя на путь, где
+        # диск написан. Сзади: путь считается годным, предупреждения нет, план
+        # показывает `All_3d \stl\деталь.stl` — строку, от исправной не
+        # отличимую, — а `All_3d ` в середине пути Windows не находит, и каждая
+        # модель остаётся в загрузках с `[WinError 3]` в отчёте.
+        data["path"] = path.strip()
+    # Галочку читают через `bool(...)` все пятеро, и потому `"false"` строкой
+    # значит «включено»: непустая строка истинна. Человек, поправивший
+    # `config.json` руками, получает ровно обратное тому, что написал — модели
+    # уезжают из загрузок, галочка в окне стоит, жалоб нет. Соседние поля этой
+    # же настройки давно проверяются по типу, эта — нет.
+    #
+    # Спорное значение гасим, а не угадываем: включённый вынос двигает файлы за
+    # пределы загрузок, и ошибиться в эту сторону дороже. Сказано об этом
+    # вслух, а поставить галочку обратно можно прямо в окне.
+    enabled = data.get("enabled")
+    if enabled is not None and not isinstance(enabled, bool):
+        problems.append(
+            f"config.json: external_3d.enabled — не «да/нет», а «{enabled}». "
+            "Вынос 3D выключен.")
+        data["enabled"] = False
     # Галочка стоит, а пути нет — и планировщик ведёт себя ровно так, будто
     # галочки тоже нет: `external_3d_path` без годного пути отдаёт None, и
     # модели едут в обычные категории. Снаружи это неотличимо от исправной
@@ -275,10 +345,11 @@ def _rule_map(raw, where: str, key: str, problems: list[str]) -> dict[str, list[
         if not isinstance(name, str):
             continue
         # Имя раздела — это имя папки: категория или тип. Путь вместо него
-        # уводит файлы из загрузок (см. `_is_folder_name`).
-        if not _is_folder_name(name):
-            problems.append(
-                f"{where}: {key} → «{name}» — это путь, а не имя папки. Пропущено.")
+        # уводит файлы из загрузок, а имя с хвостовым пробелом или точкой
+        # файловая система запишет по-своему (см. `folder_name_problem`).
+        trouble = folder_name_problem(name)
+        if trouble:
+            problems.append(f"{where}: {key} → «{name}» — {trouble}. Пропущено.")
             continue
         if not isinstance(values, list):
             problems.append(f"{where}: {key} → «{name}» — не список. Пропущено.")
@@ -287,7 +358,13 @@ def _rule_map(raw, where: str, key: str, problems: list[str]) -> dict[str, list[
         for value in values:
             if not isinstance(value, str):
                 continue
-            if not value:
+            # Строка из одних пробелов делает то же, что пустая, и приходит
+            # тем же путём. Пробел есть в имени большинства скачанных файлов,
+            # так что категория с такой записью забирает себе почти все
+            # загрузки, а в `type_map` пробел равен расширению файла, у
+            # которого расширения нет. Пробелы ВНУТРИ слова не трогаем: `" фон "`
+            # — это приём, способ потребовать границы слова, а не опечатка.
+            if not value.strip():
                 problems.append(
                     f"{where}: {key} → «{name}»: пустая строка вместо слова. "
                     "Она подходит к любому файлу — пропущена.")
@@ -338,9 +415,10 @@ def _text_map(
     построение плана целиком — и в окне, и в CLI.
 
     `folders=True` — значение станет именем папки (так у `overrides`). Тогда
-    путь вместо категории отбраковывается: файл уехал бы из загрузок
-    неизвестно куда, см. `_is_folder_name`. Подсказки категорий (`category_hints`)
-    — обычный текст, там проверять нечего.
+    отбраковывается и путь вместо категории (файл уехал бы из загрузок
+    неизвестно куда), и имя, которое файловая система запишет по-своему, —
+    см. `folder_name_problem`. Подсказки категорий (`category_hints`) — обычный
+    текст, там проверять нечего.
 
     Пустая категория тоже отбраковывается — и по той же причине, по какой
     отбраковывают битую регулярку: запись выглядит правилом, а правилом не
@@ -366,9 +444,9 @@ def _text_map(
                 f"{where}: «{name}» → категория не названа. "
                 "Такая запись ничего не решает. Пропущена.")
             continue
-        if folders and not _is_folder_name(value):
-            problems.append(
-                f"{where}: «{name}» → «{value}» — это путь, а не категория. Пропущено.")
+        trouble = folder_name_problem(value, "категория") if folders else ""
+        if trouble:
+            problems.append(f"{where}: «{name}» → «{value}» — {trouble}. Пропущено.")
             continue
         good[name] = value
     return good
@@ -395,9 +473,9 @@ def _text(raw, default: str, where: str, key: str, problems: list[str]) -> str:
     if not isinstance(raw, str) or not raw:
         problems.append(f"{where}: {key} — не строка. Взято «{default}».")
         return default
-    if not _is_folder_name(raw):
-        problems.append(
-            f"{where}: {key} — это путь, а не имя папки. Взято «{default}».")
+    trouble = folder_name_problem(raw)
+    if trouble:
+        problems.append(f"{where}: {key} — {trouble}. Взято «{default}».")
         return default
     return raw
 
@@ -460,13 +538,15 @@ def _check_type_map(
     похожа на рабочее правило, но правилом не является, и молчание тут хуже
     жалобы. В поставляемых правилах такая запись и нашлась.
 
-    Регистр не важен, как и в самом `match_type`: `"PDF"` и `"pdf"` — одно
-    расширение, и написать их в разных типах так же легко.
+    Сверяемся так же, как `match_type` (`extension_key`): `"PDF"`, `"pdf"` и
+    `".pdf"` — одно расширение, и написать их в разных типах так же легко. Пока
+    сверка шла строка в строку, пара `".pdf"`/`"pdf"` призраком не считалась —
+    то есть проверка молчала ровно там, где написание и разошлось.
     """
     seen: dict[str, str] = {}
     for type_name, extensions in type_map.items():
         for value in extensions:
-            key = str(value).lower()
+            key = extension_key(value)
             if key in seen:
                 if seen[key] != type_name:
                     problems.append(
@@ -512,7 +592,15 @@ class Config:
         problems: list[str] = []
         data = _read_json(path, problems) or {}
 
+        # Пробелы по краям пути срезаем: поле окна делает это давно, а правку
+        # руками (копипаст из письма, зацепленный при редактировании пробел)
+        # никто не подчищал. Хвостовой пробел на Windows коварнее всего:
+        # `is_dir()` его отрезает и отвечает «папка на месте», а обход такой
+        # папки не возвращает ничего — наружу это выходит как «План готов:
+        # 0 шт.», то есть неотличимо от уже прибранных загрузок.
         downloads = data.get("downloads_path")
+        if isinstance(downloads, str):
+            downloads = downloads.strip()
         if not isinstance(downloads, str) or not downloads:
             problems.append(
                 "config.json: папка загрузок не указана. "

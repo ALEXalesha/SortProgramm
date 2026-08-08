@@ -25,8 +25,11 @@ CONFIG_PATH = BASE_DIR / "config.json"
 
 def run_cli(path: str | None, do_apply: bool, to_3d: bool | None, deep: bool) -> None:
     config = Config.load(CONFIG_PATH)
-    if path:
-        config.downloads_path = path
+    # Пробелы по краям срезаем так же, как разбор настроек и поле окна: путь из
+    # командной строки приходит в кавычках, и лишний пробел внутри них заметить
+    # нечем, а на Windows он превращает работу в тихое «к перемещению: 0».
+    if path and path.strip():
+        config.downloads_path = path.strip()
 
     # Окно про испорченные настройки предупреждает окном, а CLI молчал — и
     # раскладка «всё в Others» из-за нечитаемого rules.json выглядела как

@@ -107,6 +107,16 @@ def parse_ai_response(
     разбирается и не убирается. Плюс правило имеет наивысший приоритет, то
     есть закрывает файлу дорогу в любую новую категорию навсегда.
 
+    Название категории сверяется так же мягко и по той же причине. Модель
+    отвечает `3d` вместо `3D` или `« Медиа »` с пробелами — ответ верный, а
+    сверка строка в строку объявляла его незнакомой категорией и заменяла
+    запасной, после чего фильтр «не сохранять незнание» (`useful_rules`) её
+    выбрасывал. Снаружи это «без решения»: вопрос задан и оплачен, файл остался
+    неразобранным, и понять, что модель ответила верно, было неоткуда.
+    Возвращаем название в том написании, в каком оно стоит в правилах, — из
+    него получится имя папки. Выдумку это не пропускает: незнакомое название
+    по-прежнему становится запасной категорией.
+
     `requested` — имена, про которые спрашивали. Промт просит повторять ключ
     символ в символ, и это правило модель нарушает регулярно: приводит имя к
     нижнему регистру, теряет служебный номер, дописывает файлы, которых ей не
@@ -119,6 +129,14 @@ def parse_ai_response(
     чужое отбрасываем, своё возвращаем в том написании, в каком спрашивали.
     Списка нет (разбор из тестов, ручной вызов) — сверять не с чем, берём как
     есть.
+
+    Точное совпадение имени ищется первым, и это не мелочь. Раньше список
+    спрошенных складывался в словарь по нижнему регистру, а `readme.md` и
+    `README.md` из разных папок программы — два разных файла, и второе имя
+    затирало первое. Ответ про один пропадал молча, второму доставалась чужая
+    категория. Когда точного совпадения нет, а кандидатов по регистру
+    несколько, ответ отбрасывается: на какой из файлов модель смотрела,
+    неизвестно, и угаданное правило встало бы не на тот.
     """
     raw = _extract_json(content)
     if not raw:
@@ -129,10 +147,14 @@ def parse_ai_response(
         return {}
     if not isinstance(data, dict):
         return {}
-    valid = set(valid_categories)
-    asked = None
+    known = {c.strip().lower(): c for c in valid_categories}
+    asked_exactly: set[str] = set()
+    asked_loosely: dict[str, list[str]] = {}
     if requested is not None:
-        asked = {n.rstrip("/").lower(): n.rstrip("/") for n in requested}
+        for value in requested:
+            name = value.rstrip("/")
+            asked_exactly.add(name)
+            asked_loosely.setdefault(name.lower(), []).append(name)
     result: dict[str, str] = {}
     for name, cat in data.items():
         if not isinstance(name, str) or not isinstance(cat, str):
@@ -140,11 +162,12 @@ def parse_ai_response(
         key = name.rstrip("/")
         if not key:
             continue
-        if asked is not None:
-            key = asked.get(key.lower())
-            if key is None:
+        if requested is not None and key not in asked_exactly:
+            same = asked_loosely.get(key.lower(), [])
+            if len(same) != 1:
                 continue
-        result[key] = cat if cat in valid else fallback
+            key = same[0]
+        result[key] = known.get(cat.strip().lower(), fallback)
     return result
 
 

@@ -1744,3 +1744,482 @@ def test_extension_repeated_inside_one_type_is_not_reported(tmp_path):
     config = Config.load(cfg_path)
 
     assert not [p for p in config.problems if "названо и в типе" in p], config.problems
+
+
+# --- правило, записанное другим регистром ---
+
+
+@case_insensitive
+def test_override_matches_name_written_in_other_case(tmp_path):
+    """Windows считает `Отчёт.pdf` и `отчёт.pdf` одним файлом, разбор — разными.
+
+    Ровно та же поломка, что у папки `Медиа`/`медиа`, только этажом ниже.
+    Ручное правило пишут руками, глядя на файл в проводнике, а проводник
+    показывает имя как хочет — с заглавной, целиком капсом после переименования
+    из другой программы. Ключ, набранный не тем регистром, не совпадает ни с
+    чем: правило есть, выглядит рабочим, но не срабатывает никогда, а файл
+    молча уезжает по ключевым словам или в `Others`.
+    """
+    config = make_config(tmp_path)
+    config.overrides = {"отчёт.pdf": "Учёба"}
+
+    assert explain_category("Отчёт.pdf", "", config) == ("Учёба", "правило")
+    assert explain_category("ОТЧЁТ.PDF", "", config) == ("Учёба", "правило")
+
+
+@case_insensitive
+def test_override_matches_dedup_number_in_other_case(tmp_path):
+    """Правило без номера покрывает и `(1)`, набранный другим регистром."""
+    config = make_config(tmp_path)
+    config.overrides = {"отчёт.pdf": "Учёба"}
+
+    assert explain_category("Отчёт (1).pdf", "", config) == ("Учёба", "правило")
+
+
+def test_exact_override_still_wins_over_the_one_differing_by_case(tmp_path):
+    """Точное совпадение важнее: две записи — берём ту, что написана как файл."""
+    config = make_config(tmp_path)
+    config.overrides = {"отчёт.pdf": "Учёба", "Отчёт.pdf": "Программы"}
+
+    assert explain_category("Отчёт.pdf", "", config) == ("Программы", "правило")
+    assert explain_category("отчёт.pdf", "", config) == ("Учёба", "правило")
+
+
+# --- имя папки, которое файловая система запишет иначе ---
+
+
+def test_category_with_trailing_space_is_rejected(tmp_path):
+    """`"Учёба "` выглядит категорией, а перемещения падают все до одного.
+
+    Windows отрезает у имени папки хвостовые пробелы и точки. План при этом
+    строится обычный — `Учёба \\Documents\\отчёт.pdf`, глазами от исправной
+    строки не отличить, — а `mkdir` создаёт `Учёба`, перемещение ищет
+    `Учёба \\Documents` и падает с `[WinError 3]`. В загрузках остаётся
+    неразобранный файл и пустая папка, которую никто не просил.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Учёба ": ["класс"], "Медиа": ["клип"]},
+        "type_map": {"Documents": ["pdf"]},
+        "managed_folders": ["Учёба", "Медиа", "Documents", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert "Учёба " not in config.categories
+    assert "Медиа" in config.categories, "соседняя категория не должна пострадать"
+    assert any("Учёба " in p for p in config.problems), config.problems
+
+
+def test_category_with_trailing_dot_is_rejected(tmp_path):
+    """`"Учёба."` хуже пробела: перемещение проходит, но не туда, куда обещало.
+
+    Windows отрезает точку, файлы ложатся в `Учёба`, отчёт рапортует успех — а
+    в `managed_folders` записана `Учёба.`, которой на диске нет. Настоящая
+    папка своей не считается: «Переразложить старое» в неё не заходит, пустой
+    её никто не убирает. Чёрная дыра, о которой предупредить нечем: имя-то в
+    правилах написано, проверка молчит.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Учёба.": ["класс"]},
+        "type_map": {"Documents": ["pdf"]},
+        "managed_folders": ["Учёба.", "Documents", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert "Учёба." not in config.categories
+    assert any("Учёба." in p for p in config.problems), config.problems
+
+
+def test_category_of_spaces_alone_is_rejected(tmp_path):
+    """Имя из одних пробелов не создаётся вовсе — а проверку проходило."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"   ": ["класс"]},
+        "type_map": {"Documents": ["pdf"]},
+        "managed_folders": ["Documents", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.categories == {}
+    assert any("имя папки" in p for p in config.problems), config.problems
+
+
+def test_override_category_with_trailing_space_is_rejected(tmp_path):
+    """Ручное правило `"файл.pdf": "Учёба "` — тот же тупик, тот же ответ."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Documents": ["pdf"]},
+        "managed_folders": ["Медиа", "Documents", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "overrides.json").write_text(
+        json.dumps({"отчёт.pdf": "Учёба "}, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.overrides == {}
+    assert any("Учёба " in p for p in config.problems), config.problems
+
+
+def test_ordinary_names_are_still_allowed(tmp_path):
+    """Смягчать нечего, но и лишнего запрещать не надо."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Учёба/2026": ["класс"], "3D": ["blender"], "C++": ["gcc"]},
+        "type_map": {"Documents": ["pdf"]},
+        "managed_folders": ["Учёба", "2026", "3D", "C++", "Documents",
+                            "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert set(config.categories) == {"Учёба/2026", "3D", "C++"}
+    assert not [p for p in config.problems if "имя папки" in p], config.problems
+
+
+# --- ответ ИИ про имена, различающиеся только регистром ---
+
+
+def test_ai_answer_about_two_names_differing_by_case_keeps_both():
+    """`readme.md` и `README.md` — на Windows разные файлы в разных папках.
+
+    Сверка ответа со списком спрошенных складывала имена в словарь по нижнему
+    регистру, и второе имя затирало первое. Ответ про один файл пропадал
+    молча — деньги за вопрос заплачены, правило не записано, — а второму
+    доставалась чужая категория: пары «ключ → имя» перепутаны.
+    """
+    got = parse_ai_response(
+        '{"readme.md": "Код", "README.md": "Учёба"}',
+        ["Код", "Учёба"], "Others",
+        requested=["readme.md", "README.md"])
+
+    assert got == {"readme.md": "Код", "README.md": "Учёба"}
+
+
+def test_ai_answer_in_other_case_is_still_matched_when_it_is_unambiguous():
+    """Модель нарушает «повторяй символ в символ» — одно имя вернуть можно."""
+    got = parse_ai_response(
+        '{"readme.md": "Учёба"}', ["Учёба"], "Others", requested=["README.md"])
+
+    assert got == {"README.md": "Учёба"}
+
+
+def test_ai_answer_in_other_case_is_dropped_when_it_could_be_either():
+    """Два кандидата — угадывать нельзя: правило встанет не на тот файл."""
+    got = parse_ai_response(
+        '{"Readme.md": "Учёба"}', ["Учёба"], "Others",
+        requested=["readme.md", "README.md"])
+
+    assert got == {}
+
+
+def test_ai_category_written_in_other_case_is_accepted():
+    """`3d` вместо `3D` — ответ верный, а выбрасывался как незнакомая категория.
+
+    Разбор сверял название категории строка в строку, поэтому такой ответ
+    становился запасной категорией, а фильтр «не сохранять незнание» его
+    выбрасывал. Снаружи это «без решения»: вопрос задан и оплачен, файл
+    остался неразобранным, и понять, что модель ответила верно, неоткуда.
+    """
+    got = parse_ai_response(
+        '{"деталь.stl": "3d", "клип.mp4": " Медиа "}',
+        ["3D", "Медиа"], "Others", requested=["деталь.stl", "клип.mp4"])
+
+    assert got == {"деталь.stl": "3D", "клип.mp4": "Медиа"}
+
+
+def test_ai_answer_with_a_truly_unknown_category_still_falls_back():
+    """Смягчение регистра не должно пропускать выдумку модели."""
+    got = parse_ai_response(
+        '{"a.bin": "Криптовалюта"}', ["3D"], "Others", requested=["a.bin"])
+
+    assert got == {"a.bin": "Others"}
+
+
+# --- галочка выноса 3D, записанная не булевым значением ---
+
+
+def test_3d_enabled_written_as_a_string_does_not_switch_the_export_on(tmp_path):
+    """`"enabled": "false"` — строка, и она истинна: вынос включался наоборот.
+
+    Все читатели настройки берут её через `bool(...)`, поэтому непустая строка
+    значит «включено», как её ни напиши. Человек, поправивший `config.json`
+    руками, получает ровно обратное тому, что написал: модели уезжают из
+    загрузок, галочка в окне стоит, жалоб нет. Остальные поля этой настройки
+    (`path`, `extensions`) разбор проверяет по типу и о чужом говорит вслух —
+    `enabled` проверять забыли.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "downloads_path": str(tmp_path),
+        "external_3d": {"enabled": "false", "path": str(tmp_path / "All_3d")},
+    }), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.external_3d["enabled"] is False
+    assert any("enabled" in p for p in config.problems), config.problems
+
+
+def test_3d_enabled_written_properly_stays_quiet(tmp_path):
+    """Настоящее булево значение проверку не замечает."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "downloads_path": str(tmp_path),
+        "external_3d": {"enabled": True, "path": str(tmp_path / "All_3d")},
+    }), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.external_3d["enabled"] is True
+    assert not [p for p in config.problems if "enabled" in p], config.problems
+
+
+# --- пробел на конце пути ---
+
+
+def test_downloads_path_with_trailing_space_still_finds_the_files(tmp_path):
+    """Пробел в конце пути — и папка выглядит уже прибранной.
+
+    Windows отрезает хвостовые пробелы при проверке `is_dir()`, поэтому «Папка
+    не найдена» не срабатывает, а обход такой папки не возвращает ничего.
+    Наружу это выходит как «План готов: 0 шт.» — ровно то, что README разбирает
+    на опечатке в `--path`, только там спасает проверка существования, а здесь
+    она отвечает «папка на месте». Пробел попадает в путь легко: скопировали из
+    письма, зацепили при правке `config.json` руками.
+    """
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "клип.mp4").write_text("x", encoding="utf-8")
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(downloads) + " "}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+    moves = build_plan(config)
+
+    assert [m.src.name for m in moves] == ["клип.mp4"]
+    result = apply(moves, config, dry_run=False)
+    assert result.moved == 1, result.errors
+    assert (downloads / "Медиа" / "Videos" / "клип.mp4").exists()
+
+
+def test_3d_path_with_trailing_space_still_moves_the_models(tmp_path):
+    """Тот же пробел во внешней папке 3D валит все перемещения разом.
+
+    Путь проходит проверку («полный»), предупреждения нет, план показывает
+    `All_3d \\stl\\деталь.stl` — от исправной строки не отличить. А `All_3d ` в
+    середине пути Windows не находит, и каждая модель остаётся в загрузках с
+    `[WinError 3]` в отчёте.
+    """
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "деталь.stl").write_text("x", encoding="utf-8")
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "downloads_path": str(downloads),
+        "external_3d": {"enabled": True,
+                        "path": str(tmp_path / "All_3d") + " ",
+                        "extensions": ["stl"]},
+    }), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"3D": [".stl"]},
+        "type_map": {"3D": ["stl"]},
+        "managed_folders": ["3D", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+    result = apply(build_plan(config, send_3d_external=True), config, dry_run=False)
+
+    assert result.moved == 1, result.errors
+    assert (tmp_path / "All_3d" / "stl" / "деталь.stl").exists()
+
+
+def test_3d_path_with_leading_space_is_not_called_incomplete(tmp_path):
+    """Пробел спереди объявлял полный путь «неполным» — жалоба не про то.
+
+    `Path(" C:/All_3d").is_absolute()` — False, и человек читал, что по его
+    пути «не видно ни диска», глядя на путь, где диск написан.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "downloads_path": str(tmp_path),
+        "external_3d": {"enabled": True, "path": " " + str(tmp_path / "All_3d")},
+    }), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.external_3d["path"] == str(tmp_path / "All_3d")
+    assert not [p for p in config.problems if "неполный" in p], config.problems
+
+
+def test_path_of_spaces_alone_is_treated_as_no_path(tmp_path):
+    """Путь из одних пробелов — это «пути нет», а не рабочая настройка."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "downloads_path": "   ",
+        "external_3d": {"enabled": True, "path": "   "},
+    }), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.downloads_path != "   "
+    assert config.external_3d["path"] == ""
+    assert any("путь к папке не указан" in p for p in config.problems), config.problems
+
+
+# --- расширение в type_map, записанное с точкой ---
+
+
+def test_type_map_extension_written_with_a_dot_still_matches():
+    """`".pdf"` в `type_map` — и все документы молча уезжают в `Misc`.
+
+    Три написания одного и того же живут в этом проекте рядом: слова категорий
+    пишутся с точкой (`".pdf"`), `type_map` — без, `external_3d.extensions` —
+    тоже без. Точку `external_3d.extensions` научились прощать, а `type_map`
+    остался сверкой строка в строку: `".pdf"` не совпадает с `"pdf"` ни разу.
+    Наружу это выходит ровно так же, как выходил `"PDF"` заглавными до починки
+    регистра — раскладка неверная, жалоб никаких.
+    """
+    assert match_type("pdf", {"Documents": [".pdf"]}) == "Documents"
+    assert match_type("pdf", {"Documents": ["  PDF  "]}) == "Documents"
+    assert match_type("pdf", {"Documents": ["docx"]}) == "Misc"
+
+
+def test_type_map_extension_written_with_a_dot_counts_as_the_same_ghost(tmp_path):
+    """Проверка правил-призраков тоже сверялась строка в строку.
+
+    `".pdf"` в одном типе и `"pdf"` в другом — одно и то же расширение, вторая
+    запись мертва. Молчать о ней нельзя по той же причине, по какой не молчат о
+    паре `"exr"`/`"EXR"`.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Документы": ["договор"]},
+        "type_map": {"Documents": [".pdf"], "Images": ["pdf"]},
+        "managed_folders": ["Документы", "Documents", "Images", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert any("«pdf»" in p and "Documents" in p for p in config.problems), (
+        config.problems)
+    assert match_type("pdf", config.type_map) == "Documents"
+
+
+# --- слово из одних пробелов ---
+
+
+def test_keyword_of_spaces_alone_does_not_swallow_every_file(tmp_path):
+    """Пробел вместо слова забирает почти всю папку — как пустая строка.
+
+    Пустую строку разбор выбрасывает давно: она входит в любое имя, и первая
+    же категория с ней забирает себе все загрузки. Строка из одних пробелов
+    приходит тем же путём — недописанная правка, стёртое слово, список,
+    собранный скриптом, — и делает почти то же самое: пробел есть в имени
+    большинства скачанных файлов. Отличить это от исправной работы нельзя
+    ничем, и в предпросмотре у каждой строки честная пометка «слово».
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["  "], "Документы": ["договор"]},
+        "type_map": {"Documents": ["pdf"]},
+        "managed_folders": ["Медиа", "Документы", "Documents", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.categories["Медиа"] == []
+    assert any("Медиа" in p and "пуст" in p for p in config.problems), config.problems
+    assert explain_category("договор об аренде.pdf", "", config)[0] == "Документы"
+
+
+def test_pattern_of_spaces_alone_does_not_swallow_every_file(tmp_path):
+    """У шаблонов пробел бьёт ещё раньше: они проверяются до слов."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Документы": ["договор"]},
+        "patterns": {"Медиа": [" "]},
+        "type_map": {"Documents": ["pdf"]},
+        "managed_folders": ["Медиа", "Документы", "Documents", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.patterns["Медиа"] == []
+    assert explain_category("договор об аренде.pdf", "", config)[0] == "Документы"
+
+
+def test_type_of_spaces_alone_is_not_a_type(tmp_path):
+    """Пробел в `type_map` равен расширению файла, у которого его нет.
+
+    Такая запись выдаёт файлам без расширения настоящий тип вместо запасного —
+    ровно то, ради чего оттуда выбрасывают пустую строку.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Код": ["licen"]},
+        "type_map": {"Documents": [" "]},
+        "managed_folders": ["Код", "Documents", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.type_map["Documents"] == []
+    assert match_type("", config.type_map) == "Misc"
+
+
+def test_match_type_ignores_an_empty_extension_written_by_hand():
+    """Конфиг собирают и напрямую — из тестов, из CLI. Тут проверять некому."""
+    assert match_type("", {"Documents": [""]}) == "Misc"
+    assert match_type("", {"Documents": ["   "]}) == "Misc"
+    assert match_type("", {"Documents": ["."]}) == "Misc"
+
+
+def test_keyword_with_spaces_around_a_word_still_works(tmp_path):
+    """Пробелы внутри слова — приём, а не опечатка: их не трогаем.
+
+    `" фон "` — способ потребовать границы слова ключевым словом, и обрезать
+    его значило бы менять правило, которое человек написал нарочно.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"3D": [" фон "]},
+        "type_map": {"Images": ["png"]},
+        "managed_folders": ["3D", "Images", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.categories["3D"] == [" фон "]
+    assert explain_category("студийный фон .png", "", config)[0] == "3D"
+    assert explain_category("телефон.png", "", config)[0] == "Others"
