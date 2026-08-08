@@ -342,3 +342,109 @@ def test_ai_skips_names_covered_by_a_rule_without_the_dedup_number(window):
 
     assert FakeWorker.seen is None, (
         f"спросили про имя, накрытое правилом без номера: {FakeWorker.seen}")
+
+
+# --- модели, которым место выбирает расширение ---
+
+
+@pytest.fixture
+def window_3d(app, tmp_path, monkeypatch):
+    """Окно с включённым выносом 3D: рядом с моделями лежит обычный файл."""
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (tmp_path / "All_3d").mkdir()
+    for name in ("деталь.stl", "корпус.gcode", "ЗагадочныйФайл.bin"):
+        (downloads / name).write_text("x", encoding="utf-8")
+
+    (tmp_path / "config.json").write_text(json.dumps({
+        "downloads_path": str(downloads),
+        "external_3d": {
+            "enabled": True,
+            "path": str(tmp_path / "All_3d"),
+            "extensions": ["stl", "gcode"],
+        },
+    }), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"3D": [".stl", ".gcode"]},
+        "type_map": {"3D": ["stl", "gcode"]},
+        "managed_folders": ["3D", "Others", "Misc"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    }, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(ui_qt.ai, "load_api_key", lambda base: "sk-test")
+    monkeypatch.setattr(ui_qt, "_AiWorker", FakeWorker)
+    monkeypatch.setattr(ui_qt.QMessageBox, "information", lambda *a, **k: None)
+    monkeypatch.setattr(ui_qt.QMessageBox, "warning", lambda *a, **k: None)
+    FakeWorker.seen = None
+
+    win = ui_qt.GlassWindow(tmp_path / "config.json")
+    yield win
+    win.deleteLater()
+
+
+def test_ai_does_not_pay_for_files_routed_by_extension(window_3d):
+    """С включённым выносом 3D место модели выбирает расширение, а не категория.
+
+    Ответ модели про такое имя оседает в overrides.json и не делает ничего:
+    `plan` до категории просто не доходит. Заметить это было нельзя — окно
+    отчитывалось «ИИ разложил 30 шт.», а в плане те же тридцать строк стояли с
+    пометкой «по расширению», то есть отчёт спорил с планом, лежащим рядом.
+    Правило вдобавок пустое по смыслу: каждое расширение из
+    `external_3d.extensions` и так стоит словом в категории «3D».
+    """
+    window_3d.run_ai()
+
+    assert FakeWorker.seen == ["ЗагадочныйФайл.bin"]
+
+
+def test_ai_says_why_the_rest_was_not_asked_about(window_3d):
+    """Молчать про пропущенные имена нельзя: список выглядел бы потерянным."""
+    window_3d.run_ai()
+
+    assert "2 поедут по расширению" in window_3d.status.text()
+
+
+def test_ai_asks_about_models_again_when_3d_is_off(window_3d):
+    """Снятая галочка возвращает моделям категорию — и вопрос про них снова к месту."""
+    window_3d.to_3d.setChecked(False)
+
+    window_3d.run_ai()
+
+    assert sorted(FakeWorker.seen) == [
+        "ЗагадочныйФайл.bin", "деталь.stl", "корпус.gcode"]
+
+
+def test_ai_is_silent_when_everything_goes_by_extension(app, tmp_path, monkeypatch):
+    """Папка из одних моделей: спрашивать не о чем, и это надо сказать словами."""
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (tmp_path / "All_3d").mkdir()
+    (downloads / "деталь.stl").write_text("x", encoding="utf-8")
+
+    (tmp_path / "config.json").write_text(json.dumps({
+        "downloads_path": str(downloads),
+        "external_3d": {
+            "enabled": True,
+            "path": str(tmp_path / "All_3d"),
+            "extensions": ["stl"],
+        },
+    }), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"3D": [".stl"]},
+        "type_map": {"3D": ["stl"]},
+        "managed_folders": ["3D", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(ui_qt.ai, "load_api_key", lambda base: "sk-test")
+    monkeypatch.setattr(ui_qt, "_AiWorker", FakeWorker)
+    monkeypatch.setattr(ui_qt.QMessageBox, "information", lambda *a, **k: None)
+    monkeypatch.setattr(ui_qt.QMessageBox, "warning", lambda *a, **k: None)
+    FakeWorker.seen = None
+
+    win = ui_qt.GlassWindow(tmp_path / "config.json")
+    win.run_ai()
+
+    assert FakeWorker.seen is None
+    assert "по расширению" in win.status.text()
+    win.deleteLater()

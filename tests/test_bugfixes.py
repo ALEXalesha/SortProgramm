@@ -1597,3 +1597,150 @@ def test_broken_3d_setting_also_keeps_the_extensions(tmp_path):
 
     assert config.problems
     assert config.external_3d["extensions"]
+
+
+# --- пометка причины: слово в имени или слово внутри файла ---
+
+
+def test_word_found_inside_the_file_is_named_apart(tmp_path):
+    """`README.md` уезжал в «Учёбу» с пометкой «слово», которого в имени нет.
+
+    Содержимое читается у `txt`, `md` и `csv`, и совпадение по нему получало ту
+    же пометку, что совпадение по имени. Проверить её было нечем: смотришь на
+    строку плана, ищешь в имени слово «Учёбы» и не находишь ни одного. README
+    при этом советует просматривать в первую очередь именно строки «слово» —
+    то есть непроверяемой оказывалась ровно та пометка, на которую велено
+    смотреть. Тот же случай, что у выноса 3D: причина названа, но не та.
+    """
+    config = make_config(tmp_path)
+    config.categories["Учёба"] = ["экзамен"]
+    config.managed_folders.append("Учёба")
+    touch(tmp_path / "README.md", "готовлюсь к экзамену")
+
+    moves = build_plan(config)
+
+    assert [m.note for m in moves] == ["слово в файле"]
+    assert moves[0].dst.parent.parent.name == "Учёба"
+
+
+def test_word_found_in_the_name_keeps_the_old_note(tmp_path):
+    """А совпадение по имени называется по-прежнему — пометку не переименовали."""
+    config = make_config(tmp_path)
+    touch(tmp_path / "клип.mp4")
+
+    moves = build_plan(config)
+
+    assert [m.note for m in moves] == ["слово"]
+
+
+def test_extension_word_still_ignored_inside_the_content(tmp_path):
+    """Строка «скачай installer.exe» в заметке программой её не делает."""
+    config = make_config(tmp_path)
+    touch(tmp_path / "заметка.txt", "скачай installer.exe и запусти")
+
+    moves = build_plan(config)
+
+    assert [m.note for m in moves] == ["не опознан"]
+
+
+# --- расширения выноса 3D пишут то с точкой, то без ---
+
+
+def test_3d_extensions_written_with_a_dot_still_work(tmp_path):
+    """`"extensions": [".stl"]` после правки руками — вынос молча переставал работать.
+
+    В одном проекте живут три написания одного и того же: слова категорий
+    пишутся с точкой (`".stl"`), `type_map` — без, а `external_3d.extensions`
+    сверяется с расширением файла, то есть тоже без. Сверка шла строка в
+    строку, `".stl"` не совпадало с `"stl"` ни разу, и галочка «3D → отдельная
+    папка» переставала выносить. Заметить нечем: путь годный, предупреждения
+    нет, план построен.
+    """
+    cfg_path = tmp_path / "config.json"
+    downloads = tmp_path / "загрузки"
+    cfg_path.write_text(json.dumps({
+        "downloads_path": str(downloads),
+        "external_3d": {
+            "enabled": True,
+            "path": str(tmp_path / "All_3d"),
+            "extensions": [".STL", " .obj "],
+        },
+    }), encoding="utf-8")
+    touch(downloads / "деталь.stl")
+
+    config = Config.load(cfg_path)
+
+    assert config.external_3d["extensions"] == ["stl", "obj"]
+    assert not [p for p in config.problems if "extensions" in p], config.problems
+    moves = build_plan(config, send_3d_external=True)
+    assert [m.dst for m in moves] == [tmp_path / "All_3d" / "stl" / "деталь.stl"]
+
+
+def test_empty_3d_extension_would_have_taken_every_file_without_one(tmp_path):
+    """Пустая строка в списке равна расширению файла без расширения.
+
+    `extension_of` отдаёт для такого файла пустую строку, значит одна пустая
+    запись увела бы во внешнюю папку 3D все файлы без расширения разом. Список
+    после чистки пуст, поэтому берём список по умолчанию — но говорим об этом
+    вслух: человек ограничивал вынос нарочно.
+    """
+    cfg_path = tmp_path / "config.json"
+    downloads = tmp_path / "загрузки"
+    cfg_path.write_text(json.dumps({
+        "downloads_path": str(downloads),
+        "external_3d": {
+            "enabled": True,
+            "path": str(tmp_path / "All_3d"),
+            "extensions": ["", "  "],
+        },
+    }), encoding="utf-8")
+    touch(downloads / "LICENSE")
+
+    config = Config.load(cfg_path)
+
+    assert config.external_3d["extensions"] == ["3mf", "obj", "stl", "gcode"]
+    assert any("extensions" in p for p in config.problems), config.problems
+    moves = build_plan(config, send_3d_external=True)
+    assert all("All_3d" not in str(m.dst) for m in moves), moves
+
+
+# --- расширение, названное в двух типах ---
+
+
+def test_extension_named_in_two_types_is_reported(tmp_path):
+    """Вторая запись не работает никогда, а выглядит как обычное правило.
+
+    `match_type` отдаёт первый подошедший тип. Понять, почему `.exr` лёг в
+    `Images`, если в `type_map["3D"]` он тоже написан, можно было только зная
+    про этот порядок. Тот же случай, что у битой регулярки: запись похожа на
+    рабочее правило, но правилом не является.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"3D": [".exr"]},
+        "type_map": {"Images": ["png", "exr"], "3D": ["stl", "EXR"]},
+        "managed_folders": ["3D", "Images", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert any("«EXR»" in p and "Images" in p for p in config.problems), config.problems
+    assert match_type("exr", config.type_map) == "Images"
+
+
+def test_extension_repeated_inside_one_type_is_not_reported(tmp_path):
+    """Повтор внутри одного типа ничего не ломает — о нём молчим."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Код": [".py"]},
+        "type_map": {"Code": ["py", "py"]},
+        "managed_folders": ["Код", "Code", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert not [p for p in config.problems if "названо и в типе" in p], config.problems

@@ -113,6 +113,31 @@ def path_3d_reason(raw) -> str:
     return f"путь «{raw}» неполный — по нему не видно ни диска, ни папки"
 
 
+def clean_extensions(raw) -> list[str]:
+    """Расширения в том виде, в каком их отдаёт `classifier.extension_of`.
+
+    То есть без точки, в нижнем регистре и без пустых записей. Приводить
+    приходится потому, что в одном проекте живут три разных написания одного и
+    того же: слова категорий пишутся с точкой (`".stl"`), `type_map` — без
+    (`"stl"`), а `external_3d.extensions` сверяется с расширением файла, то есть
+    тоже без. Написать `".stl"` в настройках после правки rules.json руками —
+    самая обычная ошибка, и она была из тех, что не видно: сверка шла с
+    расширением без точки, не совпадало ничего, и вынос 3D переставал выносить.
+    Ни ошибки, ни предупреждения — путь-то годный, галочка стоит, план построен.
+
+    Пустая строка выбрасывается по той же причине, что и пустое слово в
+    `_rule_map`, только исход у неё другой: `extension_of` отдаёт пустую строку
+    для файла без расширения, и такая запись увела бы во внешнюю папку 3D все
+    файлы без расширения разом.
+    """
+    good: list[str] = []
+    for value in raw:
+        text = str(value).strip().lstrip(".").lower()
+        if text and text not in good:
+            good.append(text)
+    return good
+
+
 def _is_folder_name(value: str) -> bool:
     """Годится ли строка как имя папки внутри загрузок.
 
@@ -180,8 +205,18 @@ def _clean_3d(raw, problems: list[str]) -> dict:
         return {"extensions": list(DEFAULT_3D_EXTENSIONS)}
     data = dict(raw)
     extensions = data.get("extensions")
-    if not isinstance(extensions, list) or not extensions:
-        data["extensions"] = list(DEFAULT_3D_EXTENSIONS)
+    cleaned = clean_extensions(extensions) if isinstance(extensions, list) else []
+    if not cleaned:
+        # Список был, но после чистки в нём не осталось ничего — значит внутри
+        # лежали одни пустые строки. Молча взять список по умолчанию нельзя:
+        # человек ограничивал вынос нарочно, а получил бы все расширения сразу.
+        if isinstance(extensions, list) and extensions:
+            problems.append(
+                "config.json: external_3d.extensions — ни одного пригодного "
+                "расширения. Взят список по умолчанию: "
+                + ", ".join(DEFAULT_3D_EXTENSIONS) + ".")
+        cleaned = list(DEFAULT_3D_EXTENSIONS)
+    data["extensions"] = cleaned
     # Путь уходит и в `Path()`, и в поле ввода — обоим нужна строка. Проверка
     # самой настройки на «объект» тут не помогает: объект может быть правильный,
     # а путь внутри — числом после съехавшей замены в редакторе. Программа тогда
@@ -412,6 +447,36 @@ def _check_managed(
                     "папку больше не зайдёт и пустой её не уберёт.")
 
 
+def _check_type_map(
+    type_map: dict[str, list[str]], where: str, problems: list[str]
+) -> None:
+    """Жалуется на расширение, названное сразу в двух типах.
+
+    `match_type` отдаёт первый подошедший тип, значит вторая запись не работает
+    никогда. Снаружи она выглядит как обычное правило: строка в файле есть,
+    ошибок нет, а файл ложится в другую подпапку — и понять, почему `.exr`
+    оказался в `Images`, если в `type_map["3D"]` он тоже написан, можно только
+    зная про этот порядок. Ровно тот же случай, что у битой регулярки: запись
+    похожа на рабочее правило, но правилом не является, и молчание тут хуже
+    жалобы. В поставляемых правилах такая запись и нашлась.
+
+    Регистр не важен, как и в самом `match_type`: `"PDF"` и `"pdf"` — одно
+    расширение, и написать их в разных типах так же легко.
+    """
+    seen: dict[str, str] = {}
+    for type_name, extensions in type_map.items():
+        for value in extensions:
+            key = str(value).lower()
+            if key in seen:
+                if seen[key] != type_name:
+                    problems.append(
+                        f"{where}: расширение «{value}» названо и в типе "
+                        f"«{seen[key]}», и в «{type_name}». Работает только "
+                        f"первый — «{seen[key]}».")
+            else:
+                seen[key] = type_name
+
+
 @dataclass
 class Config:
     downloads_path: str
@@ -509,6 +574,10 @@ class Config:
                 "Правил раскладки нет ни одного: ни категорий, ни шаблонов, ни "
                 f"ручных правил. Все файлы уедут в «{fallback_category}»."
                 + missing)
+
+        # Расширение, названное в двух типах, работает только в первом. Вторая
+        # запись — правило-призрак: на вид рабочая, на деле мёртвая.
+        _check_type_map(type_map, rules_name, problems)
 
         # Папку создаёт любая категория, откуда бы она ни пришла: из правил, из
         # шаблона, из ручной записи в overrides.json или из запасной строки.

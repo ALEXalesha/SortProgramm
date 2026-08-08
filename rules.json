@@ -138,7 +138,6 @@
       "esp-idf",
       "espy",
       "esptool",
-      "micropython",
       "platformio",
       "ch340",
       "ch341",
@@ -337,6 +336,9 @@
       "^audio-\\d{4}-\\d{2}-\\d{2}",
       "^\\d{4}(\\s*\\(\\d+\\))?\\.(mp4|mkv|mov|webm|mp3)$"
     ],
+    "Электроника": [
+      "micropython"
+    ],
     "3D": [
       "^\\d{4}-\\d{4}(\\s*\\(\\d+\\))?\\.(mp4|mkv|avi|webm|mov|png|jpg|jpeg|exr)$",
       "(?<![а-яёa-z])фон(?![а-яёa-z])"
@@ -445,8 +447,7 @@
       "step",
       "stp",
       "f3d",
-      "sldprt",
-      "exr"
+      "sldprt"
     ],
     "Design": [
       "fig",

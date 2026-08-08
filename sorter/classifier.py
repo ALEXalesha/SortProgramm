@@ -10,6 +10,16 @@ from .config import Config
 # `отчёт.pdf` -> `отчёт (1).pdf`.
 _DEDUP_SUFFIX = re.compile(r"\s*\(\d+\)$")
 
+# Пометки причин для предпросмотра. `BY_CONTENT` отделён от `BY_WORD` нарочно:
+# слово, найденное внутри текстового файла, глазами не проверить — в имени его
+# нет. Это единственная причина, которую нельзя перепроверить, глядя на строку
+# плана, поэтому она и названа отдельно.
+BY_RULE = "правило"
+BY_PATTERN = "шаблон"
+BY_WORD = "слово"
+BY_CONTENT = "слово в файле"
+UNKNOWN = "не опознан"
+
 
 def base_name(filename: str) -> str:
     """Имя без служебного номера ` (1)`, приписанного разрешением конфликтов.
@@ -53,8 +63,10 @@ def match_type(extension: str, type_map: dict[str, list[str]], fallback: str = "
     return fallback
 
 
-def match_category(filename: str, content: str, categories: dict[str, list[str]]) -> str | None:
-    """Категория по ключевым словам.
+def find_category(
+    filename: str, content: str, categories: dict[str, list[str]]
+) -> tuple[str, bool] | None:
+    """Категория и где нашлось слово: True — в имени, False — в содержимом.
 
     Сначала ищем слово в имени файла, затем в содержимом. Сравнение —
     регистронезависимое вхождение подстроки. None, если ничего не подошло.
@@ -64,21 +76,31 @@ def match_category(filename: str, content: str, categories: dict[str, list[str]]
     объявлялась бы программой: в тексте такие подстроки встречаются сплошь и
     рядом, а значат совсем не то, что в имени файла.
 
+    Откуда пришло слово, знать надо снаружи: в предпросмотре у этих двух случаев
+    разные пометки. Совпадение по содержимому глазами не проверить — в имени
+    искомого слова нет.
+
     >>> Это сердце логики. Порядок категорий в config задаёт приоритет:
     первая подошедшая выигрывает. Хочешь иначе (по границам слова,
     вес имени против содержимого) — менять здесь.
     """
     name = filename.lower()
     body = content.lower()
-    for source, extensions_count in ((name, True), (body, False)):
+    for source, in_name in ((name, True), (body, False)):
         for category, keywords in categories.items():
             for word in keywords:
                 word = word.lower()
-                if word.startswith(".") and not extensions_count:
+                if word.startswith(".") and not in_name:
                     continue
                 if word in source:
-                    return category
+                    return category, in_name
     return None
+
+
+def match_category(filename: str, content: str, categories: dict[str, list[str]]) -> str | None:
+    """Категория по ключевым словам. None, если ничего не подошло."""
+    found = find_category(filename, content, categories)
+    return found[0] if found else None
 
 
 def match_pattern(filename: str, patterns: dict[str, list[str]]) -> str | None:
@@ -117,21 +139,30 @@ def explain_category(filename: str, content: str, config: Config) -> tuple[str, 
     программа сама переименовала в `отчёт (1).pdf`, оставался тем же файлом.
     Правило под точное имя всё-таки ищется первым: если руки написали его
     именно для `отчёт (1).pdf`, значит так и хотели.
+
+    Слово, найденное внутри файла, называется отдельной пометкой. Содержимое
+    читается у `txt`, `md` и `csv`, и совпадение по нему неотличимо от
+    совпадения по имени: `README.md` уезжает в «Учёбу» с пометкой «слово», а
+    слова «Учёбы» в имени нет ни одного — искать его там бесполезно, оно в
+    тексте. README советует просматривать в плане именно строки «слово», то
+    есть непроверяемой оказывалась ровно та пометка, на которую велено
+    смотреть. Тот же случай, что у выноса 3D: причина названа, но не та.
     """
     name = base_name(filename)
     override = config.overrides.get(filename) or config.overrides.get(name)
     if override:
-        return override, "правило"
+        return override, BY_RULE
 
     by_pattern = match_pattern(name, config.patterns)
     if by_pattern:
-        return by_pattern, "шаблон"
+        return by_pattern, BY_PATTERN
 
-    by_word = match_category(name, content, config.categories)
+    by_word = find_category(name, content, config.categories)
     if by_word:
-        return by_word, "слово"
+        category, in_name = by_word
+        return category, BY_WORD if in_name else BY_CONTENT
 
-    return config.fallback_category, "не опознан"
+    return config.fallback_category, UNKNOWN
 
 
 def classify(filename: str, content: str, config: Config) -> tuple[str, str, str]:

@@ -243,3 +243,49 @@ def test_mid_word_match_is_still_allowed_where_it_is_right(cfg):
     assert category(cfg, "BearVPN_2.7.0.exe") == "Программы"
     assert category(cfg, "LegacyLauncher.exe") == "Игры"
     assert category(cfg, "WindowsAppRuntimeInstall-x64.exe") == "Программы"
+
+
+# --- правила-призраки: запись есть, а до неё не доходит очередь ---
+
+
+def test_micropython_is_not_shadowed_by_python(cfg):
+    """`micropython` стояло словом в «Электронике» и не срабатывало никогда.
+
+    Слова перебираются по категориям, а «Код» стоит выше «Электроники» — и
+    `python` внутри `micropython` забирал прошивку себе. Запись при этом
+    выглядела рабочей: строка в файле есть, ошибок нет, а прошивка ESP32
+    уезжала в «Код» с честной пометкой «слово». Тот же случай, что у `фон`,
+    `иво` и `sim`, только наоборот: мешает не хвост чужого слова, а собственная
+    середина. Лечится тем же — переездом в `patterns`, которые бьют раньше слов.
+    """
+    assert category(cfg, "micropython-esp32-20240105.bin") == "Электроника"
+    assert category(cfg, "MicroPython_v1.24.uf2") == "Электроника"
+    # а сам «Код» на месте: обычный питон никуда не переехал
+    assert category(cfg, "python-3.12.4-amd64.exe") == "Код"
+
+
+def test_no_extension_is_named_in_two_types(cfg):
+    """Второй тип для того же расширения — мёртвая запись.
+
+    `match_type` отдаёт первый подошедший, поэтому `exr` в `type_map["3D"]`
+    рядом с `exr` в `Images` не работал никогда. Проверку держит и `Config`
+    (жалоба при чтении), здесь — сами поставляемые правила.
+    """
+    seen = {}
+    for type_name, extensions in cfg.type_map.items():
+        for value in extensions:
+            key = str(value).lower()
+            assert key not in seen, (
+                f"«{value}» названо и в «{seen.get(key)}», и в «{type_name}»")
+            seen[key] = type_name
+
+
+def test_shipped_rules_read_without_complaints():
+    """Поставляемые правила должны читаться без единой жалобы.
+
+    Проверки `Config` (битые регулярки, категории мимо `managed_folders`,
+    расширение в двух типах) писались по настоящим поломкам в этом самом файле.
+    Молчание при чтении — их итог.
+    """
+    config = Config.load(CONFIG_PATH)
+    assert config.problems == []

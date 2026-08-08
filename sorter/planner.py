@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .classifier import classify, explain_category, extension_of
-from .config import Config, path_3d_reason, usable_3d_path
+from .config import Config, clean_extensions, path_3d_reason, usable_3d_path
 from .scanner import scan
 
 TEXT_EXTENSIONS = {"txt", "md", "csv"}
@@ -102,12 +102,25 @@ def external_3d_warning(config: Config, send_3d_external: bool) -> str:
 def _external_3d_extensions(config: Config) -> set[str]:
     """Расширения, которые едут во внешнюю папку 3D.
 
-    Проверка типа здесь дублирует `Config.load`: конфиг собирают и напрямую —
-    из тестов, из CLI, — а падать на строке вместо словаря планировщик не должен.
+    Приведение к виду `extension_of` (без точки, нижним регистром) здесь
+    дублирует `Config.load` по той же причине, что и проверка типа: конфиг
+    собирают и напрямую — из тестов, из CLI, — а сверять `".stl"` из настроек
+    с `"stl"` из имени файла значит не совпасть ни разу и промолчать об этом.
     """
     if not isinstance(config.external_3d, dict):
         return set()
-    return {str(e).lower() for e in config.external_3d.get("extensions", [])}
+    return set(clean_extensions(config.external_3d.get("extensions", [])))
+
+
+def goes_by_extension(filename: str, config: Config, send_3d_external: bool) -> bool:
+    """Выберет ли место этому файлу расширение, а не категория.
+
+    Один ответ на всех: так решает `plan`, и так же должна решать кнопка «✨ИИ»,
+    которой незачем платить за категорию, которую всё равно никто не спросит.
+    """
+    if not send_3d_external or external_3d_path(config) is None:
+        return False
+    return extension_of(filename) in _external_3d_extensions(config)
 
 
 def plan(
@@ -126,7 +139,6 @@ def plan(
     по нескольким источникам (загрузки + All_3d), чтобы имена не сталкивались.
     """
     root = Path(config.downloads_path)
-    ext_3d = _external_3d_extensions(config)
     external_path = external_3d_path(config)
 
     moves: list[Move] = []
@@ -138,7 +150,7 @@ def plan(
         category, reason = explain_category(src.name, content, config)
         _, file_type, extension = classify(src.name, content, config)
 
-        if send_3d_external and external_path is not None and extension in ext_3d:
+        if goes_by_extension(src.name, config, send_3d_external):
             # Место выбрало расширение, категория тут ни при чём. Причина её
             # выбора («слово», «не опознан») в такой строке плана врала: по
             # таблице в README «не опознан» значит «едет в Others», а файл едет

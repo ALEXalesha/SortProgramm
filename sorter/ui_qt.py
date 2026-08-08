@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 from .classifier import base_name
 from .config import Config
 from .scanner import scan
-from .planner import build_plan, external_3d_warning, Move
+from .planner import build_plan, external_3d_warning, goes_by_extension, Move
 from .mover import apply
 from .util import rel_to, listing, report
 from . import ai
@@ -543,6 +543,17 @@ class GlassWindow(QWidget):
         второе нажатие «✨ИИ» превращалось в оплаченную пустышку — запрос на
         сотню имён и «ИИ разложил 0 шт.» в ответ.
 
+        Модели, которые поедут во внешнюю папку 3D, не уходят в запрос по той же
+        причине. Место им выбирает расширение, категория при этом не
+        спрашивается вовсе (`planner.goes_by_extension`), так что ответ модели
+        оседает в overrides.json и не делает ничего. Заметить это было нельзя:
+        окно отчитывалось «ИИ разложил 30 шт.», а в плане те же тридцать строк
+        стояли с пометкой «по расширению» — отчёт спорил с планом, лежащим
+        рядом. Правило вдобавок пустое по смыслу: каждое расширение из
+        `external_3d.extensions` и так стоит словом в категории «3D» (это
+        держит тест `test_every_external_3d_extension_is_a_3d_keyword`), то есть
+        модель платно повторяла то, что правила знают и без неё.
+
         Пустое поле пути отбивается отдельно: `Path("")` — это текущая папка, и
         `is_dir()` на ней отвечает True. Без этой проверки ИИ разбирал папку
         самой программы — её имена уходили в DeepSeek, ответы записывались
@@ -568,20 +579,31 @@ class GlassWindow(QWidget):
         # запрос по разу на файл — лишние деньги, лишние пачки, и счёт
         # «спрашиваю по N именам» из-за них врал.
         seen = list(dict.fromkeys(f.name for f in files))
-        names = [name for name in seen if not self._has_rule(name)]
-        covered = len(seen) - len(names)
+        to_3d = self.to_3d.isChecked()
+        by_ext = [n for n in seen if goes_by_extension(n, self.config, to_3d)]
+        askable = [n for n in seen if n not in set(by_ext)]
+        names = [name for name in askable if not self._has_rule(name)]
+        covered = len(askable) - len(names)
+        # Почему часть имён не спрашиваем. Молчать нельзя: «спрашиваю по 3
+        # именам» на папке из тридцати файлов выглядит как потерянный список.
+        skipped = []
+        if covered:
+            skipped.append(f"{covered} уже с правилами")
+        if by_ext:
+            skipped.append(f"{len(by_ext)} поедут по расширению")
+        reasons = ", ".join(skipped)
         if not names:
             self.status.setText(
-                f"Нечего разбирать: у всех имён уже есть правила ({covered})."
-                if covered else "Нечего разбирать.")
+                f"Нечего разбирать: {reasons}." if reasons
+                else "Нечего разбирать.")
             return
         cats = list(self.config.categories.keys()) + [self.config.fallback_category]
         # Сколько имён ушло в запрос. Ответ приходит один, без вопроса, а
         # посчитать оставшихся без решения можно только сравнив одно с другим.
         self._ai_asked = len(names)
         self.ai_btn.setEnabled(False)
-        skipped = f" ({covered} уже с правилами — не спрашиваем)" if covered else ""
-        self.status.setText(f"Спрашиваю DeepSeek по {len(names)} именам…{skipped}")
+        tail = f" ({reasons} — не спрашиваем)" if reasons else ""
+        self.status.setText(f"Спрашиваю DeepSeek по {len(names)} именам…{tail}")
         self._worker = _AiWorker(
             names, cats, key, self.config.category_hints,
             self.config.fallback_category)
