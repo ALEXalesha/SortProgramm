@@ -113,6 +113,32 @@ def match_type(extension: str, type_map: dict[str, list[str]], fallback: str = "
     return fallback
 
 
+def _in_text(word: str, text: str) -> bool:
+    """Есть ли ключевое слово в содержимом файла — с границами слова.
+
+    В имени файла подстрока — это приём: `задач` ловит и `задачи`, и
+    `задачник`, а имя короткое, и лишнего в нём почти не бывает. В тексте на
+    две тысячи знаков тот же приём превращается в лотерею. `obs` (OBS Studio)
+    находится в «observed» и «problems», `demo` (демоверсия) — в
+    «demonstrating» и «democracy», и заметка про ИИ уезжает в «Программы».
+    Проверить это нечем: пометка «слово в файле» именно тем и отличается от
+    остальных, что искомого слова в имени нет, и глазами по строке плана
+    ничего не увидеть.
+
+    Поэтому в тексте слово требует границы. Спереди — всегда, если само слово
+    начинается с буквы. Сзади — только если оно кончается латинской буквой:
+    латиница в этих правилах это названия целиком (`obs`, `node`, `epic`,
+    `zoom`), а кириллица написана основами нарочно, потому что склоняется —
+    `решени` обязано ловить «решения». Слово, у которого край и так не буква
+    (`-fon.`, `счёт-`, `pla0`), границу несёт в себе, и требовать вторую
+    значило бы запретить его вовсе.
+    """
+    head = r"(?<![^\W\d_])" if word[:1].isalpha() else ""
+    last = word[-1:]
+    tail = r"(?![^\W\d_])" if last.isalpha() and last.isascii() else ""
+    return re.search(head + re.escape(word) + tail, text) is not None
+
+
 def find_category(
     filename: str, content: str, categories: dict[str, list[str]]
 ) -> tuple[str, bool] | None:
@@ -130,6 +156,10 @@ def find_category(
     разные пометки. Совпадение по содержимому глазами не проверить — в имени
     искомого слова нет.
 
+    В имени слово ищется подстрокой, в содержимом — с границами слова
+    (`_in_text`): в коротком имени лишнее попадается редко, в длинном тексте —
+    постоянно.
+
     >>> Это сердце логики. Порядок категорий в config задаёт приоритет:
     первая подошедшая выигрывает. Хочешь иначе (по границам слова,
     вес имени против содержимого) — менять здесь.
@@ -140,10 +170,11 @@ def find_category(
         for category, keywords in categories.items():
             for word in keywords:
                 word = word.lower()
-                if word.startswith(".") and not in_name:
-                    continue
-                if word in source:
-                    return category, in_name
+                if in_name:
+                    if word in source:
+                        return category, True
+                elif not word.startswith(".") and _in_text(word, source):
+                    return category, False
     return None
 
 

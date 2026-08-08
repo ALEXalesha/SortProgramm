@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .classifier import classify, explain_category, extension_of
 from .config import Config, clean_extensions, path_3d_reason, usable_3d_path
-from .scanner import scan
+from .scanner import scan, scan_3d
 
 TEXT_EXTENSIONS = {"txt", "md", "csv"}
 CONTENT_PREVIEW_CHARS = 2000
@@ -226,7 +226,12 @@ def build_plan(
     Чужие папки — распакованные архивы, миры игр, репозитории — не трогаются
     ни в одном режиме. Программа двигает только то, что создала сама.
 
-    Папка All_3d разбирается всегда, если её путь задан в конфиге.
+    Папка All_3d разбирается всегда, если её путь задан в конфиге, и `deep`
+    задаёт глубину и ей тоже: корень разбирается при любой уборке, а папки
+    расширений (`All_3d/stl`, `All_3d/gcode`) проверяются заново только при
+    переразложении — ровно как папки категорий в загрузках. Раньше внутрь
+    All_3d не заглядывали никогда, и модель, однажды уехавшая не в ту подпапку,
+    оставалась там навсегда: «Переразложить старое» до неё не доходило.
     """
     taken: set[Path] = set()
 
@@ -239,7 +244,8 @@ def build_plan(
         # файлы. Без этого фильтра один файл попал бы в план дважды: первое
         # перемещение прошло бы, второе упало с «нет файла».
         planned = {mv.src for mv in moves}
-        loose = [f for f in scan(external_path, config, deep=False) if f not in planned]
+        loose = [f for f in scan_3d(external_path, config, deep=deep)
+                 if f not in planned]
         moves += plan_3d_folder(loose, config, taken=taken)
 
     return moves

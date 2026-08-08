@@ -2223,3 +2223,216 @@ def test_keyword_with_spaces_around_a_word_still_works(tmp_path):
     assert config.categories["3D"] == [" фон "]
     assert explain_category("студийный фон .png", "", config)[0] == "3D"
     assert explain_category("телефон.png", "", config)[0] == "Others"
+
+
+# --- правило в запасную категорию ---
+
+
+def test_rule_into_the_fallback_category_is_dropped(tmp_path):
+    """`0001-0250.mp4 → Others` не давало шаблону опознать рендер Blender.
+
+    Ручное правило стоит выше шаблонов и слов, поэтому такая запись — это
+    записанное «не знаю», которое закрывает файлу дорогу навсегда. Без неё файл
+    уехал бы в ту же запасную папку, но по текущим правилам; с ней — мимо всего,
+    что появилось потом. Отличить это от исправной работы нельзя ничем: план
+    построен, жалоб нет, в предпросмотре честная пометка «правило».
+
+    `ai.useful_rules` не даёт записать такое правило от модели, но записи,
+    попавшие в файл раньше, читались как обычные: проверка стояла только на
+    записи.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "patterns": {"3D": [r"^\d{4}-\d{4}\.(mp4|png)$"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "3D", "Videos", "Others", "Misc"],
+        "fallback_category": "Others",
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "overrides.json").write_text(json.dumps({
+        "0001-0250.mp4": "Others",
+        "клип.mp4": "Медиа",
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert "0001-0250.mp4" not in config.overrides
+    assert config.overrides == {"клип.mp4": "Медиа"}, "чужие правила не трогаем"
+    assert explain_category("0001-0250.mp4", "", config) == ("3D", "шаблон")
+    assert any("0001-0250.mp4" in p for p in config.problems), config.problems
+
+
+def test_rule_into_the_fallback_written_in_other_case_is_dropped_too(tmp_path):
+    """`others` и `Others` на Windows — одна папка, и морозят одинаково."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "overrides.json").write_text(
+        json.dumps({"клип.mp4": "others"}, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.overrides == {}
+    assert explain_category("клип.mp4", "", config) == ("Медиа", "слово")
+
+
+def test_rules_into_real_categories_stay_quiet(tmp_path):
+    """Обычные ручные правила не трогаем и молчим о них."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "3D", "Videos", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "overrides.json").write_text(
+        json.dumps({"деталь.mp4": "3D"}, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.overrides == {"деталь.mp4": "3D"}
+    assert not [p for p in config.problems if "запасную категорию" in p]
+
+
+# --- символы, запрещённые в имени папки ---
+
+
+def test_category_with_a_forbidden_character_is_rejected(tmp_path):
+    """`"Отчёты?"` — план строится, а не переезжает ни один файл.
+
+    `?`, `*`, `"`, `<`, `>`, `|` Windows в имени не разрешает вовсе: `mkdir`
+    падает с `[WinError 123]` на каждом файле подряд. Ошибки в отчёте называют
+    папку назначения, а не строку в правилах, из-за которой её нельзя создать.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Отчёты?": ["отчёт"], "Медиа": ["клип"]},
+        "type_map": {"Documents": ["pdf"]},
+        "managed_folders": ["Медиа", "Documents", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert "Отчёты?" not in config.categories
+    assert "Медиа" in config.categories, "соседняя категория не должна пострадать"
+    assert any("Отчёты?" in p for p in config.problems), config.problems
+
+
+def test_colon_inside_a_nested_category_is_rejected(tmp_path):
+    """Двоеточие в первой части ловилось как буква диска, во второй — ничем."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Учёба/2026: год": ["класс"]},
+        "type_map": {"Documents": ["pdf"]},
+        "managed_folders": ["Documents", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.categories == {}
+    assert any("2026" in p for p in config.problems), config.problems
+
+
+def test_forbidden_character_in_a_type_and_in_a_rule_is_rejected(tmp_path):
+    """Тип и ручное правило создают папку так же — проверка одна на всех."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Video|Audio": ["mp4"]},
+        "managed_folders": ["Медиа", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "overrides.json").write_text(
+        json.dumps({"отчёт.pdf": 'Уч"ёба'}, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.type_map == {}
+    assert config.overrides == {}
+    assert any("Video|Audio" in p for p in config.problems), config.problems
+
+
+# --- список расширений 3D, написанный не списком ---
+
+
+def test_3d_extensions_written_as_a_string_are_reported(tmp_path):
+    """`"extensions": "stl"` молча превращалось в полный список по умолчанию.
+
+    То есть делало обратное написанному: человек сужал вынос до одного
+    расширения, а из загрузок уезжали все четыре.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "downloads_path": str(tmp_path),
+        "external_3d": {"enabled": True, "path": str(tmp_path / "All_3d"),
+                        "extensions": "stl"},
+    }), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert any("не список" in p for p in config.problems), config.problems
+
+
+# --- слово, найденное внутри текста ---
+
+
+def test_word_inside_a_longer_english_word_is_not_a_match():
+    """`obs` ловилось в «observed», `demo` — в «demonstrating».
+
+    В имени файла подстрока это приём: `задач` ловит и `задачи`, и `задачник`.
+    В тексте на две тысячи знаков тот же приём находит слово случайно, и
+    заметка про ИИ уезжает в «Программы» из-за OBS Studio. Проверить пометку
+    «слово в файле» глазами нельзя — искомого слова в имени нет.
+    """
+    categories = {"Программы": ["obs"], "Учёба": ["demo"]}
+    text = "these are observed patterns, demonstrating the problem"
+
+    assert match_category("заметка.md", text, categories) is None
+
+
+def test_whole_english_word_inside_the_text_still_matches():
+    """Ради этого содержимое и читается — целое слово ловиться обязано."""
+    categories = {"Программы": ["obs"]}
+
+    assert match_category("заметка.md", "запись экрана в obs studio",
+                          categories) == "Программы"
+
+
+def test_russian_stem_inside_the_text_still_matches():
+    """`решени` обязано ловить «решения»: русское слово склоняется.
+
+    Русские слова в этих правилах написаны основами нарочно, поэтому граница
+    требуется только спереди. Латинские — названия целиком, им нужны обе.
+    """
+    categories = {"Учёба": ["решени", "задач"]}
+
+    assert match_category("конспект.md", "разбор задачи и решения к ней",
+                          categories) == "Учёба"
+
+
+def test_word_with_a_non_letter_edge_still_matches_inside_the_text():
+    """`-fon.` и `счёт-` границу несут в себе — вторую требовать нельзя."""
+    categories = {"Документы": ["счёт-"]}
+
+    assert match_category("письмо.md", "приложен счёт-фактура за май",
+                          categories) == "Документы"
+
+
+def test_name_still_matches_by_substring():
+    """Имя короткое, и подстрока в нём — приём, а не лотерея."""
+    categories = {"Учёба": ["задач"]}
+
+    assert match_category("задачник_9.pdf", "", categories) == "Учёба"

@@ -4,7 +4,8 @@ from __future__ import annotations
 import fnmatch
 from pathlib import Path
 
-from .config import Config, folder_key, folder_keys
+from .classifier import extension_of
+from .config import Config, extension_key, folder_key, folder_keys
 
 
 def _is_ignored(name: str, patterns: list[str]) -> bool:
@@ -53,6 +54,67 @@ def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
         elif deep and entry.is_dir() and folder_key(entry.name) in managed:
             found.extend(_walk_managed(entry, config, visited))
 
+    return found
+
+
+def is_extension_folder(folder: Path, config: Config) -> bool:
+    """Подпапка внешней папки 3D, которую создала сама программа.
+
+    Своей она считается не по имени, а по содержимому: внутри лежит хотя бы
+    один файл ровно с тем расширением, которым папка названа. Имени одного мало
+    — `модели`, `запчасти`, `проекты` выглядят так же, а раскладывал их человек
+    руками, и переразложение вынесло бы файлы наверх, разобрав по расширениям
+    порядок, который никто не просил трогать. Это то же правило, по которому
+    обход не заходит в `Учёба/Documents/9 класс`, только опознавательный знак
+    здесь другой: списка `managed_folders` для All_3d нет и быть не может —
+    там расширения, а не категории.
+
+    Файл-свидетель ищется только прямо внутри папки. Глубже начинается уже
+    чужая раскладка: `All_3d/stl/корпус/деталь.stl` человек разложил сам.
+    """
+    key = extension_key(folder.name)
+    if not key:
+        return False
+    try:
+        entries = folder.iterdir()
+    except OSError:
+        return False
+    for entry in entries:
+        if entry.is_file() and extension_of(entry.name) == key:
+            return True
+    return False
+
+
+def scan_3d(root: str | Path, config: Config, deep: bool = False) -> list[Path]:
+    """Файлы внешней папки 3D (All_3d).
+
+    deep=False — только корень: файлы, которые туда положили руками или
+                 скачали, и которых ещё не касалась раскладка по расширениям.
+    deep=True  — плюс папки расширений, созданные самой программой
+                 (`is_extension_folder`). Режим «Переразложить старое».
+
+    Разбор корня был всегда, а внутрь программа не заглядывала ни разу — то
+    есть однажды уехавшая не в ту подпапку модель оставалась там навсегда.
+    Попасть туда просто: расширение убрали из `external_3d.extensions`, файл
+    переименовали, папку набили руками из проводника. «Переразложить старое»
+    для загрузок это чинит с самого начала, а для All_3d не делало ничего:
+    галочка стояла, план строился, папка 3D в нём не участвовала.
+
+    Файл, лежащий в папке своего расширения, никуда не поедет — `plan_3d_folder`
+    сравнивает откуда с куда и пропускает совпавшее. То есть на прибранной
+    папке этот режим просто ничего не находит.
+    """
+    root = Path(root)
+    found = scan(root, config, deep=False)
+    if not deep or not root.is_dir():
+        return found
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        return found
+    for entry in entries:
+        if entry.is_dir() and is_extension_folder(entry, config):
+            found.extend(scan(entry, config, deep=False))
     return found
 
 

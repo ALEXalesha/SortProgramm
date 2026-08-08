@@ -106,3 +106,33 @@ def test_apply_result_stays_in_the_status_line(window, shown):
     win.do_apply()
 
     assert win.status.text() == "Перемещено: 2, ошибок: 0"
+
+
+def test_empty_path_field_does_not_erase_the_saved_folder(window):
+    """Очищенное поле пути стирало настройку насовсем.
+
+    Поле убирается одним Ctrl+A и Delete — промахнулся мимо «Обзор…», начал
+    править и передумал. Окно после этого честно говорит «Папка не найдена», и
+    это выглядит ошибкой одного прогона; на деле закрытие писало в config.json
+    пустую строку поверх единственной копии пути. Следующий запуск подставлял
+    `~/Downloads` и жаловался на ненайденную настройку — возвращать было
+    неоткуда.
+    """
+    win, downloads = window
+    win.path_edit.setText("")
+
+    win.close()
+
+    saved = json.loads((downloads.parent / "config.json").read_text(encoding="utf-8"))
+    assert saved["downloads_path"] == str(downloads)
+
+
+def test_a_folder_that_is_gone_is_still_saved(window):
+    """Диск отключили, флешку вынули — путь всё равно настроен и нужен."""
+    win, downloads = window
+    win.path_edit.setText("Z:/нет такой папки")
+
+    win.close()
+
+    saved = json.loads((downloads.parent / "config.json").read_text(encoding="utf-8"))
+    assert saved["downloads_path"] == "Z:/нет такой папки"

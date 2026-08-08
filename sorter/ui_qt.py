@@ -249,6 +249,10 @@ class GlassWindow(QWidget):
         super().__init__()
         self.config_path = config_path
         self.config = Config.load(config_path)
+        # Путь, с которым окно открылось. Нужен на закрытии: пустое поле
+        # настройкой не является, а записать его в config.json значит стереть
+        # единственное место, где путь хранился (см. `_save_settings`).
+        self.saved_path = self.config.downloads_path
         self.moves: list[Move] = []
         self._drag_pos: QPoint | None = None
 
@@ -434,11 +438,29 @@ class GlassWindow(QWidget):
         self.config.external_3d["path"] = self.path_3d_edit.text().strip()
 
     def _save_settings(self):
+        """Пишет настройки в config.json. Пустое поле пути не сохраняет.
+
+        Поле можно очистить одним Ctrl+A и Delete — промахнулся мимо «Обзор…»,
+        начал править и передумал, случайно зацепил. Дальше окно честно говорит
+        «Папка не найдена», и это выглядит как ошибка одного прогона; на самом
+        деле закрытие окна писало пустую строку в config.json поверх
+        единственной копии пути. Следующий запуск уже не знал, какую папку
+        человек выбирал: `Config.load` жаловался на ненайденную настройку и
+        подставлял `~/Downloads`. Возвращать было неоткуда.
+
+        Пустая строка настройкой не бывает никогда, поэтому её просто не
+        записываем — остаётся то, с чем окно открылось. Ненайденная папка это
+        не касается: диск могли отключить, флешку вынуть, и стирать из-за
+        этого настроенный путь нельзя тем более.
+        """
         self._sync_config()
+        if not self.config.downloads_path:
+            self.config.downloads_path = self.saved_path
         try:
             self.config.save(self.config_path)
         except OSError:
-            pass
+            return
+        self.saved_path = self.config.downloads_path
 
     def open_downloads(self):
         path = self.path_edit.text().strip()
