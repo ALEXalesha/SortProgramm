@@ -231,7 +231,7 @@ def test_apply_survives_unwritable_downloads_folder(tmp_path):
 
     assert result.moved == 1
     assert result.undo_log is None
-    assert result.errors, "потерю журнала отмены надо показать, а не проглотить"
+    assert result.undo_failed, "потерю журнала отмены надо показать, а не проглотить"
 
 
 # --- испорченные настройки не ломают запуск ---
@@ -2633,3 +2633,125 @@ def test_binary_file_named_txt_does_not_crash_the_plan(tmp_path):
     moves = build_plan(make_config(downloads))
 
     assert [mv.src.name for mv in moves] == ["мусор.txt"]
+
+
+# --- незаписанный журнал отмены — не файл, оставшийся в загрузках ---
+
+
+def _sorted_with_blocked_log(downloads):
+    """Раскладывает папку так, что журнал отмены записать некуда.
+
+    `.sorter` занимает файл, появившийся после построения плана: до плана он
+    уехал бы в `Others` вместе со всеми и ничему не помешал.
+    """
+    config = make_config(downloads)
+    moves = build_plan(config)
+    (downloads / ".sorter").write_text("не папка", encoding="utf-8")
+    return apply(moves, config, dry_run=False)
+
+
+def test_unwritten_undo_log_is_not_counted_as_a_failed_move(tmp_path):
+    """«Перемещено: 1, ошибок: 1» при одном файле, который переехал.
+
+    Незаписанный журнал складывался в тот же список, что и файлы, оставшиеся
+    в загрузках. Список этот отчёт печатает под заголовком «Не переехали», и
+    оба его слова были неправдой: переехали все до одного, а «журнал отмены» —
+    не файл и никуда не собирался. Заодно врал и счёт ошибок, по которому окно
+    решает, показывать спокойное окно или тревожное.
+
+    Настоящее последствие при этом терялось: файлы разложены, а вернуть их
+    назад больше нечем — «🕘 История» об этой сортировке не знает. Это стоит
+    сказать своими словами, а не прятать среди неудавшихся перемещений.
+    """
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "клип.mp4")
+
+    result = _sorted_with_blocked_log(downloads)
+
+    assert result.moved == 1
+    assert result.errors == [], "переехали все — списку неудач взяться неоткуда"
+    assert result.undo_failed, "о пропавшем откате надо сказать отдельно"
+
+
+def test_report_names_the_lost_undo_apart_from_failed_moves(tmp_path):
+    """В отчёте у пропавшего отката свой заголовок, а не «Не переехали»."""
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "клип.mp4")
+
+    text = report(_sorted_with_blocked_log(downloads))
+
+    assert "Не переехали" not in text
+    assert "ошибок: 0" in text
+    assert "отменить" in text.lower()
+
+
+def test_written_undo_log_keeps_the_report_short(tmp_path):
+    """Обычная сортировка про журнал не говорит ни слова."""
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "клип.mp4")
+    config = make_config(downloads)
+
+    result = apply(build_plan(config), config, dry_run=False)
+
+    assert result.undo_failed == ""
+    assert report(result) == "Перемещено: 1, ошибок: 0"
+
+
+# --- файл, занявший путь папки, в которую едут другие ---
+
+
+def test_file_named_like_a_category_does_not_block_the_whole_run(tmp_path):
+    """Файл `Медиа` без расширения ронял все перемещения в `Медиа`.
+
+    План на такой папке правильный: файл `Медиа` уезжает в `Others/Misc`, а
+    `клип.mp4` — в `Медиа/Videos`. Но выполнялся план в том порядке, в каком
+    его построили, и `mkdir` для `Медиа/Videos` натыкался на файл, который
+    ещё не успел уехать: `[WinError 183]` на каждом файле этой категории.
+    Отчёт при этом честный, но говорит про папку назначения, а про виновника —
+    файл, лежащий рядом, — не говорит ничего.
+
+    Порядок теперь такой: сначала уезжает то, что занимает чужой путь.
+    """
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "клип.mp4")
+    touch(downloads / "Медиа", "это файл, а не папка")
+    config = make_config(downloads)
+
+    result = apply(build_plan(config), config, dry_run=False)
+
+    assert result.errors == []
+    assert result.moved == 2
+    assert (downloads / "Медиа" / "Videos" / "клип.mp4").is_file()
+    assert (downloads / "Others" / "Misc" / "Медиа").is_file()
+
+
+def test_ordinary_plan_keeps_its_order(tmp_path):
+    """Перестановка касается только виновников — остальные идут как шли."""
+    downloads = tmp_path / "загрузки"
+    for name in ("а.mp4", "б.mp4", "в.mp4"):
+        touch(downloads / name)
+    config = make_config(downloads)
+    moves = build_plan(config)
+
+    result = apply(moves, config, dry_run=False)
+
+    assert result.moved == 3
+    log = json.loads(result.undo_log.read_text(encoding="utf-8"))
+    assert [Path(e["src"]).name for e in log] == [mv.src.name for mv in moves]
+
+
+# --- пустое слово в конфиге, собранном не из файла ---
+
+
+def test_empty_keyword_written_by_hand_does_not_swallow_every_file():
+    """Пустая строка входит в любое имя — категория забрала бы всё.
+
+    Разбор правил такую запись выбрасывает с жалобой, но конфиг собирают и
+    напрямую — из тестов, из CLI, — и там проверять некому. `match_type` от
+    пустого расширения закрылся давно и по той же причине; поиск по словам,
+    который решает не тип, а категорию, оставался открытым.
+    """
+    categories = {"Пусто": ["", "   "], "Медиа": ["клип"]}
+
+    assert match_category("клип.mp4", "", categories) == "Медиа"
+    assert match_category("отчёт.pdf", "", categories) is None

@@ -193,7 +193,7 @@ class SorterApp:
         # одно лишь число ошибок не говорит, какой файл остался в загрузках и
         # почему. Текст общий с окном PyQt и консолью (`util.report`).
         self.status.set(f"Перемещено: {result.moved}, ошибок: {len(result.errors)}")
-        if result.errors or result.notes:
+        if result.errors or result.notes or result.undo_failed:
             messagebox.showwarning("Готово с оговорками", report(result))
         else:
             messagebox.showinfo("Готово", report(result))

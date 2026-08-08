@@ -86,6 +86,11 @@ def run_cli(path: str | None, do_apply: bool, to_3d: bool | None, deep: bool) ->
             print(f"  {src}: {note}")
         if result.undo_log:
             print(f"Лог отмены: {result.undo_log}")
+        elif result.undo_failed:
+            # Файлы разложены, а отменять нечем. Раньше эта строка приезжала
+            # в общий список ошибок и печаталась как файл, который не переехал.
+            print(f"Отменить эту сортировку не выйдет: журнал отмены "
+                  f"не записан ({result.undo_failed})")
     else:
         print("\n(режим показа — ничего не перемещено; добавь --apply чтобы применить)")
 

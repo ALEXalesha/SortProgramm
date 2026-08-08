@@ -728,6 +728,14 @@ class Config:
     fallback_type: str = "Misc"
     extra: dict = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
+    # `overrides.json` рядом лежит, но разобрать его не вышло.
+    #
+    # Отличать это от «файла нет» приходится потому, что писать в него умеет
+    # окно (кнопка «✨ИИ»), а пустой словарь у обоих случаев одинаковый. Файла
+    # нет — писать можно, терять нечего. Файл есть и не читается — там могут
+    # лежать сотни решений, принятых руками, и запись на его место стёрла бы
+    # их все разом (см. `ui_qt._save_overrides`).
+    overrides_unreadable: bool = False
 
     @classmethod
     def load(cls, path: str | Path) -> "Config":
@@ -788,9 +796,14 @@ class Config:
                        "managed_folders", problems),
             rules_name, problems)
         ignore = _text_list(rules.get("ignore"), rules_name, "ignore", problems)
+        # Пустой словарь получается и когда файла нет, и когда он есть, но не
+        # читается. Для работы это одно и то же, а для записи — нет: во втором
+        # случае на диске лежат правила, которых мы не знаем.
+        overrides_path = path.with_name(OVERRIDES_FILENAME)
+        raw_overrides = _read_json(overrides_path, problems)
+        overrides_unreadable = raw_overrides is None and overrides_path.exists()
         overrides = _text_map(
-            _read_json(path.with_name(OVERRIDES_FILENAME), problems),
-            overrides_name, "правила", problems, folders=True)
+            raw_overrides, overrides_name, "правила", problems, folders=True)
         external_3d = _clean_3d(data.get("external_3d"), problems)
         fallback_category = _text(
             rules.get("fallback_category"), "Others",
@@ -852,6 +865,7 @@ class Config:
             fallback_type=fallback_type,
             extra={k: v for k, v in data.items() if k not in skip},
             problems=problems,
+            overrides_unreadable=overrides_unreadable,
         )
 
     def save(self, path: str | Path) -> None:

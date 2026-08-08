@@ -448,3 +448,45 @@ def test_ai_is_silent_when_everything_goes_by_extension(app, tmp_path, monkeypat
     assert FakeWorker.seen is None
     assert "по расширению" in win.status.text()
     win.deleteLater()
+
+
+def test_unreadable_overrides_are_not_overwritten_by_the_answer(window, tmp_path):
+    """Ответ модели затирал файл правил, который не смогли прочитать.
+
+    `overrides.json` пишет только эта кнопка, а живут в нём решения, принятые
+    руками, — сотни строк, накопленных за годы, без истории и журнала отмены.
+    Разбор настроек нечитаемый файл пропускает («Файл пропущен») и работает с
+    пустым словарём; звучит это как «в этот раз без правил», а на деле первое
+    же нажатие «✨ИИ» записывало на его место свой ответ — и от прежнего
+    содержимого не оставалось ничего.
+
+    Дорога сюда короткая: недописанная скобка при правке руками, оборванная
+    запись, кончившееся место. Файл при этом почти всегда цел и чинится в
+    редакторе за минуту — если он ещё есть.
+    """
+    win = window
+    overrides = tmp_path / "overrides.json"
+    broken = json.dumps({f"файл{i}.pdf": "Медиа" for i in range(50)},
+                        ensure_ascii=False)[:-20]
+    overrides.write_text(broken, encoding="utf-8")
+    win.config = ui_qt.Config.load(tmp_path / "config.json")
+    assert win.config.overrides == {}
+
+    win._ai_done({"новый.mp4": "Медиа"})
+
+    assert overrides.read_text(encoding="utf-8") == broken
+    assert "не сохранены" in win.status.text()
+
+
+def test_readable_overrides_are_still_written(window, tmp_path):
+    """Обычный файл правил кнопка по-прежнему дополняет."""
+    win = window
+    overrides = tmp_path / "overrides.json"
+    overrides.write_text(json.dumps({"старое.pdf": "Медиа"}, ensure_ascii=False),
+                         encoding="utf-8")
+    win.config = ui_qt.Config.load(tmp_path / "config.json")
+
+    win._ai_done({"новый.mp4": "Медиа"})
+
+    assert json.loads(overrides.read_text(encoding="utf-8")) == {
+        "старое.pdf": "Медиа", "новый.mp4": "Медиа"}

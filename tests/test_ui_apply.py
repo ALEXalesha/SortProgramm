@@ -136,3 +136,49 @@ def test_a_folder_that_is_gone_is_still_saved(window):
 
     saved = json.loads((downloads.parent / "config.json").read_text(encoding="utf-8"))
     assert saved["downloads_path"] == "Z:/нет такой папки"
+
+
+def test_apply_does_not_sort_the_folder_the_window_stopped_naming(window, shown):
+    """«Применить» двигало файлы из папки, которой в окне уже не было.
+
+    План строит «🧹 Очистить», а поле пути правится руками — и никого об этом
+    не спрашивает: `preview` вызывают «Обзор…» и обе галочки, а набранный
+    текст не вызывает ничего. Между двумя нажатиями окно поэтому спокойно
+    показывает папку B, таблицу с планом для папки A и кнопку, которая
+    применит именно A. Подтверждение спрашивает «Переместить 5 файлов?» и
+    папку не называет, так что заметить подмену не по чему.
+
+    Хуже последствий вторая половина. Журнал отмены ложится в ту папку, из
+    которой унесли файлы, — в A; следом `_save_settings` записывает в
+    config.json уже B, и «🕘 История» смотрит в B. То есть только что
+    сделанную сортировку окном не отменить вовсе.
+
+    План теперь пересобирается сам, если поля перестали ему соответствовать.
+    """
+    win, downloads = window
+    other = downloads.parent / "другая папка"
+    other.mkdir()
+    (other / "отчёт.pdf").write_text("x", encoding="utf-8")
+    win.preview()
+    assert len(win.moves) == 2
+
+    win.path_edit.setText(str(other))
+    win.do_apply()
+
+    assert (downloads / "клип.mp4").is_file(), "файл из папки, которой в окне нет"
+    assert (other / "Документы" / "Documents" / "отчёт.pdf").is_file()
+    assert (other / ".sorter").is_dir(), "журнал должен лечь туда, где сортировали"
+
+
+def test_typed_path_refreshes_the_table(window):
+    """Поле пути теперь пересобирает план само, как это делает «Обзор…»."""
+    win, downloads = window
+    other = downloads.parent / "другая папка"
+    other.mkdir()
+    (other / "отчёт.pdf").write_text("x", encoding="utf-8")
+    win.preview()
+
+    win.path_edit.setText(str(other))
+    win.path_edit.editingFinished.emit()
+
+    assert [mv.src.name for mv in win.moves] == ["отчёт.pdf"]

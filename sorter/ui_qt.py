@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .classifier import find_override
-from .config import Config
+from .config import Config, OVERRIDES_FILENAME
 from .scanner import scan
 from .planner import build_plan, external_3d_warning, goes_by_extension, Move
 from .mover import apply
@@ -254,6 +254,8 @@ class GlassWindow(QWidget):
         # единственное место, где путь хранился (см. `_save_settings`).
         self.saved_path = self.config.downloads_path
         self.moves: list[Move] = []
+        # Из чего построен показанный план (`_plan_key`). None — плана нет.
+        self._planned_for: tuple | None = None
         self._drag_pos: QPoint | None = None
 
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
@@ -310,6 +312,10 @@ class GlassWindow(QWidget):
         row.addWidget(QLabel("Папка:"))
         self.path_edit = QLineEdit(self.config.downloads_path)
         self.path_edit.setPlaceholderText("Путь к папке загрузок для сортировки")
+        # Набранный руками путь пересобирает план так же, как «Обзор…». Без
+        # этого окно спокойно показывало папку B и таблицу с планом для папки A
+        # (см. `do_apply`).
+        self.path_edit.editingFinished.connect(self.preview)
         row.addWidget(self.path_edit, stretch=1)
         browse = QPushButton("Обзор…")
         browse.clicked.connect(self.browse_folder)
@@ -336,6 +342,7 @@ class GlassWindow(QWidget):
         row.addWidget(self.to_3d)
         self.path_3d_edit = QLineEdit(self.config.external_3d.get("path", ""))
         self.path_3d_edit.setPlaceholderText("Путь к папке для 3D-моделей (3mf/obj/stl/gcode)")
+        self.path_3d_edit.editingFinished.connect(self.preview)
         # Поле остаётся живым и со снятой галочкой. Галочка решает только одно —
         # уезжают ли модели из загрузок; разбор самого корня All_3d по подпапкам
         # расширений идёт всегда, пока путь задан. Отключённое поле обещало
@@ -485,6 +492,15 @@ class GlassWindow(QWidget):
         # После возможной отмены файлы вернулись — пересобираем план.
         self.preview()
 
+    def _plan_key(self) -> tuple:
+        """Всё, от чего зависит план: обе папки и обе галочки.
+
+        Нужен, чтобы «Применить» могло заметить, что показанный план построен
+        не для того, что сейчас написано в полях (см. `do_apply`).
+        """
+        return (self.path_edit.text().strip(), self.path_3d_edit.text().strip(),
+                self.to_3d.isChecked(), self.resort.isChecked())
+
     def preview(self, deep: bool = False):
         """Строит план.
 
@@ -493,6 +509,7 @@ class GlassWindow(QWidget):
         """
         deep = deep or self.resort.isChecked()
         self._sync_config()
+        self._planned_for = self._plan_key()
         root = Path(self.config.downloads_path)
         if not self.config.downloads_path or not root.is_dir():
             self.table.setRowCount(0)
@@ -529,8 +546,22 @@ class GlassWindow(QWidget):
         живут в памяти до закрытия окна, поэтому и план, и раскладка выглядят
         как надо. Пропадает ответ ИИ уже потом — при следующем запуске, когда
         связать пропажу с той кнопкой не с чем.
+
+        Файл, который не удалось прочитать при запуске, не переписываем вовсе.
+        Разбор настроек говорит о нём «Файл пропущен» и работает с пустым
+        словарём — это про текущий запуск, а звучит как «в этот раз без
+        правил». На деле первое же нажатие «✨ИИ» записывало на его место свой
+        ответ, и от прежнего содержимого не оставалось ничего: у overrides.json
+        нет ни истории, ни журнала отмены, в отличие от самих перемещений, а
+        живут в нём решения, принятые руками, — сотни строк, накопленных за
+        годы. Дорога сюда короткая: недописанная скобка при правке руками,
+        оборванная запись, кончившееся место. Файл при этом почти всегда цел и
+        чинится в редакторе за минуту — если он ещё есть.
         """
-        path = self.config_path.with_name("overrides.json")
+        if self.config.overrides_unreadable:
+            return ("файл не удалось прочитать при запуске, а запись на его "
+                    "место стёрла бы все правила, которые в нём лежат")
+        path = self.config_path.with_name(OVERRIDES_FILENAME)
         try:
             path.write_text(
                 json.dumps(self.config.overrides, ensure_ascii=False, indent=2),
@@ -725,6 +756,26 @@ class GlassWindow(QWidget):
             worker.wait()
 
     def do_apply(self):
+        """Выполняет показанный план.
+
+        План, переставший соответствовать полям, пересобирается перед
+        подтверждением. Строит его «🧹 Очистить», а поля правятся руками и
+        никого об этом не спрашивают: `preview` зовут «Обзор…» и обе галочки, а
+        набранный текст не звал ничего. Между двумя нажатиями окно поэтому
+        спокойно показывало папку B, таблицу с планом для папки A и кнопку,
+        которая применит именно A; подтверждение спрашивает «Переместить 5
+        файлов?» и папку не называет, так что заметить подмену не по чему.
+
+        Хуже последствий вторая половина. Журнал отмены ложится туда, откуда
+        унесли файлы, — в A; следом `_save_settings` записывает в config.json
+        уже B, и «🕘 История» смотрит в B. То есть только что сделанную
+        сортировку окном не отменить вовсе.
+
+        Само по себе пустое «Применить» плана не строит: два шага — сначала
+        посмотреть, потом применить — это и есть защита от случайного нажатия.
+        """
+        if self.moves and self._planned_for != self._plan_key():
+            self.preview()
         if not self.moves:
             QMessageBox.information(self, "Нет плана", "Сначала нажми «Очистить».")
             return
@@ -748,7 +799,7 @@ class GlassWindow(QWidget):
         # Само число ошибок ни о чём не говорит: какой файл не переехал и
         # почему, видно только из списка (`util.report`).
         self.status.setText(f"Перемещено: {result.moved}, ошибок: {len(result.errors)}")
-        (QMessageBox.warning if result.errors or result.notes
+        (QMessageBox.warning if result.errors or result.notes or result.undo_failed
          else QMessageBox.information)(self, "Готово", report(result))
 
 
