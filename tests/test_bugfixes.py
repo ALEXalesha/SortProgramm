@@ -2436,3 +2436,200 @@ def test_name_still_matches_by_substring():
     categories = {"Учёба": ["задач"]}
 
     assert match_category("задачник_9.pdf", "", categories) == "Учёба"
+
+
+# --- имя папки, начинающееся с пробела ---
+
+
+def test_category_with_leading_space_is_rejected(tmp_path):
+    """`" Учёба"` — хвостовой пробел наоборот, и заметить его ещё труднее.
+
+    Хвостовой Windows отрезает, поэтому перемещения падают или файлы уезжают в
+    соседнюю папку. Ведущий пробел файловая система сохраняет как есть — то
+    есть создаёт настоящую отдельную папку ` Учёба`, на вид неотличимую от
+    `Учёба`. В `managed_folders` её нет: «Переразложить старое» в неё не
+    заходит, пустой её никто не убирает, новые правила до лежащего внутри не
+    доезжают никогда. Та самая чёрная дыра, только без единого способа её
+    увидеть — в проводнике две такие папки стоят рядом и выглядят одинаково.
+
+    Проверка смотрела лишь на `rstrip`, поэтому пропускала это молча.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {" Учёба": ["класс"], "Медиа": ["клип"]},
+        "type_map": {"Documents": ["pdf"]},
+        "managed_folders": ["Учёба", "Медиа", "Documents", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert " Учёба" not in config.categories
+    assert "Медиа" in config.categories, "соседняя категория не должна пострадать"
+    assert any(" Учёба" in p for p in config.problems), config.problems
+
+
+def test_type_ending_with_a_nonbreaking_space_is_rejected(tmp_path):
+    """`"Documents\\xa0"` — неразрывный пробел, которого `rstrip(" .")` не видит.
+
+    Приходит он копипастом из письма или с веб-страницы. Windows его не
+    отрезает, значит папка создаётся отдельная и на вид та же самая.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Documents ": ["pdf"], "Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Documents", "Videos", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert "Documents " not in config.type_map
+    assert "Videos" in config.type_map, "соседний тип не должен пострадать"
+    assert any("Documents" in p and "пробел" in p for p in config.problems), config.problems
+
+
+def test_override_category_with_leading_space_is_rejected(tmp_path):
+    """Ручное правило `"отчёт.pdf": " Учёба"` — тот же тупик, тот же ответ."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Documents": ["pdf"]},
+        "managed_folders": ["Медиа", "Documents", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "overrides.json").write_text(
+        json.dumps({"отчёт.pdf": " Учёба"}, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.overrides == {}
+    assert any(" Учёба" in p for p in config.problems), config.problems
+
+
+def test_nested_category_with_a_space_after_the_slash_is_rejected(tmp_path):
+    """`"Учёба/ 2026"` — вторая половина имени тоже уходит в `mkdir`."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Учёба/ 2026": ["класс"]},
+        "type_map": {"Documents": ["pdf"]},
+        "managed_folders": ["Учёба", "2026", "Documents", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.categories == {}
+    assert any("2026" in p for p in config.problems), config.problems
+
+
+# --- своя папка, записанная в managed_folders с лишним пробелом ---
+
+
+def test_managed_folder_written_with_a_trailing_space_still_counts(tmp_path):
+    """`"Медиа "` в managed_folders превращало настоящую `Медиа` в чёрную дыру.
+
+    Сверка идёт строка в строку по правилам файловой системы, а имени с
+    хвостовым пробелом на диске не бывает: Windows его отрезает. Совпадения
+    нет никогда, поэтому «Переразложить старое» в `Медиа` не заходит и пустой
+    её не убирает.
+
+    Хуже последствий сама жалоба. `_check_managed` говорит «категория «Медиа»
+    не указана в managed_folders», а человек смотрит в файл и видит там
+    `Медиа`: сообщение выглядит враньём, и искать в нём невидимый пробел
+    никому в голову не придёт. Отличить одно от другого можно только сравнив
+    длины строк.
+
+    Пробелы по краям поэтому срезаем, как у пути к загрузкам, и говорим об
+    этом вслух.
+    """
+    downloads = tmp_path / "загрузки"
+    (downloads / "Медиа" / "Videos").mkdir(parents=True)
+    (downloads / "Медиа" / "Videos" / "клип.mp4").write_text("x", encoding="utf-8")
+
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"downloads_path": str(downloads)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"], "Игры": ["quest"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа ", "Игры", "Videos", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert "Медиа" in config.managed_folders
+    assert any("Медиа " in p for p in config.problems), config.problems
+    assert not [p for p in config.problems if "не указан" in p], (
+        "жалоба про managed_folders противоречила бы файлу", config.problems)
+    # А главное — папка снова своя: переразложение в неё заходит и видит,
+    # что файл уже лежит правильно.
+    assert build_plan(config, deep=True) == []
+
+
+# --- текстовый файл не в UTF-8 ---
+
+
+def test_keyword_inside_a_cp1251_text_is_found(tmp_path):
+    """Содержимое читалось только как UTF-8, то есть русский cp1251 — никак.
+
+    Так сохраняют .txt старые программы и .csv из Excel на русской Windows.
+    `errors="ignore"` выбрасывал каждый нечитаемый байт, от текста оставались
+    крохи латиницы, и ни одно русское слово в нём не находилось.
+
+    Заметить это нельзя ничем: пометка у такого файла — честное «не опознан»,
+    неотличимое от «слова в тексте и правда нет». Ключ DeepSeek давно читается
+    во всех кодировках, которые предлагает Блокнот, — содержимое читалось
+    в одной.
+    """
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "заметка.txt").write_bytes(
+        "смотри клип вечером".encode("cp1251"))
+
+    moves = build_plan(make_config(downloads))
+
+    assert [(str(mv.dst.relative_to(downloads)), mv.note) for mv in moves] == [
+        (str(Path("Медиа") / "Documents" / "заметка.txt"), "слово в файле")]
+
+
+def test_keyword_inside_a_utf16_text_is_found(tmp_path):
+    """UTF-16 из Блокнота — второй вариант, который он предлагает сам."""
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "заметка.txt").write_bytes(
+        "смотри клип вечером".encode("utf-16"))
+
+    moves = build_plan(make_config(downloads))
+
+    assert [str(mv.dst.relative_to(downloads)) for mv in moves] == [
+        str(Path("Медиа") / "Documents" / "заметка.txt")]
+
+
+def test_keyword_inside_a_utf8_text_with_bom_is_found(tmp_path):
+    """«UTF-8 с BOM» — третий, и метка в начале не должна ничего ломать."""
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "заметка.txt").write_bytes(
+        "смотри клип вечером".encode("utf-8-sig"))
+
+    moves = build_plan(make_config(downloads))
+
+    assert [str(mv.dst.relative_to(downloads)) for mv in moves] == [
+        str(Path("Медиа") / "Documents" / "заметка.txt")]
+
+
+def test_binary_file_named_txt_does_not_crash_the_plan(tmp_path):
+    """Что угодно с именем .txt — план всё равно должен строиться."""
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "мусор.txt").write_bytes(bytes(range(256)) * 4)
+
+    moves = build_plan(make_config(downloads))
+
+    assert [mv.src.name for mv in moves] == ["мусор.txt"]

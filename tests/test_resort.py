@@ -167,3 +167,47 @@ def test_root_of_the_3d_folder_is_still_sorted_without_resort(tmp_path):
 
     moves = build_plan(cfg, send_3d_external=True, deep=False)
     assert [mv.dst.parent.name for mv in moves] == ["stl"]
+
+
+def test_resort_enters_extension_folder_where_every_file_is_misplaced(tmp_path):
+    """`All_3d/stl` без единого `.stl` внутри переразложение обходило стороной.
+
+    Своей папка внутри All_3d считалась только по файлу-свидетелю: внутри
+    должен лежать хотя бы один файл ровно с тем расширением, которым папка
+    названа. Правило написано против `корпус`, `запчасти`, `проекты` — их
+    раскладывал человек, и разбирать их по расширениям нельзя.
+
+    Но `stl` — не `корпус`. Это имя из `external_3d.extensions`, то есть папка,
+    которую программа создаёт сама (`plan_3d_folder`). Когда в ней не осталось
+    ни одного правильного файла — расширение убрали из настройки, файлы
+    переименовали, папку набили руками из проводника, — свидетеля нет, и
+    «Переразложить старое» проходило мимо. То есть ровно тот случай, ради
+    которого разбор папок расширений и добавляли: модель уехала не туда и
+    осталась там навсегда.
+    """
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    external = tmp_path / "All_3d"
+    touch(external / "stl" / "деталь.gcode")
+    touch(external / "stl" / "крышка.obj")
+
+    cfg = make_3d_config(downloads, external)
+
+    moves = build_plan(cfg, send_3d_external=True, deep=True)
+
+    assert sorted(str(mv.dst.relative_to(external)) for mv in moves) == [
+        str(Path("gcode") / "деталь.gcode"),
+        str(Path("obj") / "крышка.obj"),
+    ]
+
+
+def test_resort_still_ignores_a_handmade_folder_named_like_a_stranger(tmp_path):
+    """`All_3d/корпус` человек разложил сам — имени нет в extensions, не трогаем."""
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    external = tmp_path / "All_3d"
+    touch(external / "корпус" / "деталь.gcode")
+
+    cfg = make_3d_config(downloads, external)
+
+    assert build_plan(cfg, send_3d_external=True, deep=True) == []

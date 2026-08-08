@@ -169,6 +169,29 @@ def clean_extensions(raw) -> list[str]:
     return good
 
 
+def external_3d_extensions(external_3d) -> set[str]:
+    """Расширения, которые едут во внешнюю папку 3D, в виде `extension_of`.
+
+    Читателей у этого списка двое и они далеко друг от друга: планировщик
+    решает, кому место выбирает расширение, а обход решает, какая подпапка
+    внутри All_3d создана программой, а какая человеком. Считать одно и то же
+    двумя способами тут нельзя — разойдясь, они начнут спорить о судьбе одного
+    и того же файла.
+
+    Приведение дублирует `Config.load` нарочно: конфиг собирают и напрямую — из
+    тестов, из CLI, — а сверять `".stl"` из настроек с `"stl"` из имени файла
+    значит не совпасть ни разу и промолчать об этом. Не список (`"stl"` вместо
+    `["stl"]` после правки руками) — это «списка нет»: перебор строки по буквам
+    выдал бы расширения `s`, `t`, `l`.
+    """
+    if not isinstance(external_3d, dict):
+        return set()
+    raw = external_3d.get("extensions", [])
+    if not isinstance(raw, list):
+        return set()
+    return set(clean_extensions(raw))
+
+
 def folder_name_problem(value: str, noun: str = "имя папки") -> str:
     """Почему строка не годится именем папки. Пустая строка — годится.
 
@@ -194,6 +217,21 @@ def folder_name_problem(value: str, noun: str = "имя папки") -> str:
 
     Имя из одних пробелов не создаётся вовсе и попадает сюда же.
 
+    Пробел в начале имени — тот же случай наизнанку, и он тише всех прочих.
+    Хвостовой файловая система отрезает, и потому хоть как-то себя выдаёт:
+    перемещения падают или файлы оказываются в соседней папке. Ведущий она
+    сохраняет как есть — то есть создаёт настоящую отдельную папку ` Учёба`,
+    на вид неотличимую от `Учёба`. В `managed_folders` её нет, значит
+    «Переразложить старое» в неё не заходит, пустой её никто не убирает, а
+    новые правила до лежащего внутри не доезжают никогда. Увидеть это в
+    проводнике нельзя: две такие папки стоят рядом и выглядят одинаково.
+    Приходит пробел обычным путём — копипаст имени из README, правка руками,
+    съехавшая кавычка в JSON.
+
+    Считаем по `strip`, а не по одному пробелу: неразрывный пробел (`\\xa0`)
+    прилетает копипастом с веб-страницы, Windows его тоже не отрезает, и папка
+    получается ровно такая же отдельная и невидимая.
+
     Третий случай — символ, которого Windows в имени не разрешает вовсе:
     `? * " < > |` и всё, что ниже пробела. Исход тут третий и самый шумный:
     план строится обычный, а `mkdir` падает с `[WinError 123]` на каждом файле
@@ -218,6 +256,9 @@ def folder_name_problem(value: str, noun: str = "имя папки") -> str:
     if any(not part.strip() or part != part.rstrip(" .") for part in parts):
         return (f"это не {noun}: хвостовые пробелы и точки файловая система "
                 "отрезает, и папка получится другая")
+    if any(part != part.strip() for part in parts):
+        return (f"это не {noun}: пробел по краю имени файловая система "
+                "сохранит, и папка получится отдельная, а на вид та же самая")
     return ""
 
 
@@ -494,6 +535,44 @@ def _text_list(raw, where: str, key: str, problems: list[str]) -> list[str]:
     return [v for v in raw if isinstance(v, str)]
 
 
+def _trim_managed(names: list[str], where: str, problems: list[str]) -> list[str]:
+    """Срезает пробелы по краям имён в `managed_folders`. О срезанном говорит.
+
+    Своя папка опознаётся сверкой имени по правилам файловой системы, а имени
+    с хвостовым пробелом на диске не бывает: Windows его отрезает. Значит
+    запись `"Медиа "` не совпадёт с настоящей `Медиа` никогда, и папка
+    перестаёт быть своей — «Переразложить старое» в неё не заходит, пустой её
+    никто не убирает, новые правила до лежащего внутри не доезжают. Ровно та
+    чёрная дыра, о которой предупреждает `_check_managed`, только пришедшая с
+    другой стороны: категория-то написана правильно.
+
+    Хуже последствий сама жалоба. `_check_managed` скажет «категория «Медиа»
+    не указана в managed_folders», человек посмотрит в файл и увидит там
+    `Медиа` — сообщение выглядит враньём, и искать в нём невидимый пробел
+    никому в голову не придёт. Отличить одно от другого можно только сравнив
+    длины двух одинаковых на вид строк.
+
+    Поэтому здесь не отбраковка, а срезка: пути к загрузкам и к папке 3D
+    подчищаются точно так же и по той же причине. Имя папки с пробелом по краю
+    правилами больше не считается вовсе (`folder_name_problem`), так что терять
+    тут нечего — а от записи, оставшейся из одних пробелов, толку нет никакого,
+    и её выбрасываем.
+    """
+    trimmed: list[str] = []
+    for name in names:
+        clean = name.strip()
+        if clean == name:
+            trimmed.append(name)
+            continue
+        problems.append(
+            f"{where}: managed_folders → «{name}» написана с пробелом по краю. "
+            "С настоящей папкой такое имя не совпадёт никогда"
+            + (f" — взято «{clean}»." if clean else ", и срезать нечего. Пропущено."))
+        if clean:
+            trimmed.append(clean)
+    return trimmed
+
+
 def _text(raw, default: str, where: str, key: str, problems: list[str]) -> str:
     """Имя запасной папки (`fallback_category`/`fallback_type`).
 
@@ -588,7 +667,8 @@ def _check_managed(
         return
     known = folder_keys(managed)
     seen: set[str] = set()
-    for kind, names in (("категория", categories), ("тип", types)):
+    for kind, verb, names in (("категория", "указана", categories),
+                              ("тип", "указан", types)):
         for name in names:
             for part in _SEPARATORS.split(name):
                 key = folder_key(part)
@@ -596,7 +676,7 @@ def _check_managed(
                     continue
                 seen.add(key)
                 problems.append(
-                    f"{where}: {kind} «{part}» не указана в managed_folders. "
+                    f"{where}: {kind} «{part}» не {verb} в managed_folders. "
                     "Файлы в неё разложатся, но «Переразложить старое» в эту "
                     "папку больше не зайдёт и пустой её не уберёт.")
 
@@ -703,8 +783,10 @@ class Config:
         category_hints = _text_map(
             rules.get("category_hints"), rules_name, "category_hints", problems)
         type_map = _rule_map(rules.get("type_map"), rules_name, "type_map", problems)
-        managed_folders = _text_list(
-            rules.get("managed_folders"), rules_name, "managed_folders", problems)
+        managed_folders = _trim_managed(
+            _text_list(rules.get("managed_folders"), rules_name,
+                       "managed_folders", problems),
+            rules_name, problems)
         ignore = _text_list(rules.get("ignore"), rules_name, "ignore", problems)
         overrides = _text_map(
             _read_json(path.with_name(OVERRIDES_FILENAME), problems),
