@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .config import Config, folder_key, folder_keys
 from .planner import Move, external_3d_path
+from .util import read_text
 
 
 @dataclass
@@ -233,12 +234,17 @@ def undo(undo_log: Path | str, config: Config | None = None) -> list[tuple[str, 
     """
     log_path = Path(undo_log)
     try:
-        entries = json.loads(log_path.read_text(encoding="utf-8"))
+        entries = json.loads(read_text(log_path))
     except (OSError, ValueError) as exc:
         # Записи внутри журнала разбираются осторожно (`entries_of`), а сам файл
         # читался напрямую: на оборванной записи `json.loads` бросает ValueError,
         # который окно истории не ловит, — и программа падала целиком вместо
         # того, чтобы сказать, что откатывать нечем.
+        #
+        # Кодировку разбирает общий декодер: журнал лежит в папке пользователя,
+        # и открыть его в Блокноте — обычное дело, когда откат чем-то не
+        # устроил. Сохранение «в UTF-8 с BOM» после этого делало журнал
+        # нечитаемым, а вместе с ним пропадала и запись из «🕘 Истории».
         return [(str(log_path), f"журнал отмены не читается: {exc}")]
 
     notes: list[tuple[str, str]] = []

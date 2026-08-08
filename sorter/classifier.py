@@ -59,6 +59,15 @@ def find_override(overrides: dict[str, str], filename: str) -> str | None:
     На Linux и macOS `name_key` ничего не меняет: там это и правда разные
     файлы, и путать их было бы уже вторжением в чужое.
 
+    Заходов именно четыре, а не три: раньше оба захода по правилам файловой
+    системы были свалены в один проход по словарю с общим набором искомых имён,
+    и решал не порядок заходов, а порядок строк в `overrides.json`. Правило,
+    написанное ровно под `отчёт (1).pdf`, но не тем регистром, проигрывало
+    правилу для `отчёт.pdf`, если стояло ниже, — и та же пара правил,
+    переставленная местами, отправляла файл в другую категорию. Правило под
+    номерное имя пишут нарочно: `отчёт (1).pdf` — это второй отчёт, и место у
+    него своё.
+
     Перебор по всему словарю нестрашен: он случается только когда точного
     совпадения нет, а правил в `overrides.json` сотни, не миллионы.
     """
@@ -67,10 +76,10 @@ def find_override(overrides: dict[str, str], filename: str) -> str | None:
         value = overrides.get(key)
         if value:
             return value
-    wanted = {name_key(filename), name_key(stripped)}
-    for key, value in overrides.items():
-        if value and name_key(key) in wanted:
-            return value
+    for wanted in (name_key(filename), name_key(stripped)):
+        for key, value in overrides.items():
+            if value and name_key(key) == wanted:
+                return value
     return None
 
 

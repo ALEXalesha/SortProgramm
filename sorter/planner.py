@@ -1,7 +1,6 @@
 """Построение плана перемещений (откуда → куда) с разрешением конфликтов."""
 from __future__ import annotations
 
-import codecs
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,17 +8,13 @@ from .classifier import classify, explain_category, extension_of
 from .config import (Config, external_3d_extensions, path_3d_reason,
                      usable_3d_path)
 from .scanner import scan, scan_3d
+from .util import decode_text
 
 TEXT_EXTENSIONS = {"txt", "md", "csv"}
 CONTENT_PREVIEW_CHARS = 2000
 # Байтов читаем с запасом: русская буква занимает два и в UTF-8, и в UTF-16, а
 # в UTF-16 ещё и латиница по два. Лишнее отрезается уже по символам.
 CONTENT_PREVIEW_BYTES = CONTENT_PREVIEW_CHARS * 4
-
-# Метки, с которых начинается файл в UTF-16. Определять эту кодировку иначе
-# нельзя: почти любая чётная строка байтов «раскодируется» как UTF-16 без
-# ошибки, поэтому пробовать её вслепую значит объявить текстом набор иероглифов.
-_UTF16_MARKS = (b"\xff\xfe", b"\xfe\xff")
 
 # Пометка причины для того, что раскладывается по расширению, а не по категории.
 # Место таким файлам выбирает расширение, и говорить о них словами таблицы
@@ -36,36 +31,21 @@ class Move:
     note: str = ""
 
 
-def _decode(raw: bytes) -> str:
-    """Начало текстового файла словами. Не разобралось ничем — пустая строка.
+def _read_content(path: Path) -> str:
+    """Начало текстового файла словами. Не прочиталось — пустая строка.
 
-    Читалось это раньше одним способом — как UTF-8 с `errors="ignore"`, — и для
-    русского текста в cp1251 такое чтение равносильно отсутствию чтения: каждый
-    нечитаемый байт выбрасывается, от строки остаются крохи латиницы, и ни одно
-    слово в ней не находится. А cp1251 никуда не делся: так пишут `.txt`
-    программы десятилетней давности и `.csv` — Excel на русской Windows.
+    Кодировку разбирает общий декодер (`util.decode_text`). Читалось это раньше
+    одним способом — как UTF-8 с `errors="ignore"`, — и для русского текста в
+    cp1251 такое чтение равносильно отсутствию чтения: каждый нечитаемый байт
+    выбрасывается, от строки остаются крохи латиницы, и ни одно слово в ней не
+    находится. А cp1251 никуда не делся: так пишут `.txt` программы
+    десятилетней давности и `.csv` — Excel на русской Windows.
 
     Заметить это было нельзя ничем. Пометка у такого файла — честное
     «не опознан», от «слова в тексте и правда нет» неотличимое; в имени
     искомого слова нет по определению (иначе сработала бы пометка «слово»), то
-    есть перепроверить строку плана глазами не выйдет. Ключ DeepSeek читается
-    во всех кодировках, которые предлагает Блокнот, с тех пор как из-за UTF-16
-    гасло окно, — содержимое читалось в одной.
-
-    Обрыв куска на середине символа поломкой не считается: неполный хвост
-    держит у себя пошаговый декодер. Без этого обрезанный по границе байтов
-    UTF-8 объявлялся бы битым и уезжал разбираться как cp1251 целиком.
+    есть перепроверить строку плана глазами не выйдет.
     """
-    encodings = ("utf-16",) if raw[:2] in _UTF16_MARKS else ("utf-8-sig", "cp1251")
-    for encoding in encodings:
-        try:
-            return codecs.getincrementaldecoder(encoding)().decode(raw)
-        except UnicodeDecodeError:
-            continue
-    return ""
-
-
-def _read_content(path: Path) -> str:
     if extension_of(path.name) not in TEXT_EXTENSIONS:
         return ""
     try:
@@ -73,7 +53,7 @@ def _read_content(path: Path) -> str:
             raw = fh.read(CONTENT_PREVIEW_BYTES)
     except OSError:
         return ""
-    return _decode(raw)[:CONTENT_PREVIEW_CHARS]
+    return decode_text(raw)[:CONTENT_PREVIEW_CHARS]
 
 
 def _dedup(dst: Path, taken: set[Path]) -> Path:

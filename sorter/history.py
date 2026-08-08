@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .mover import entries_of, undo as _undo
+from .util import read_text
 
 _PREFIX = "undo_"
 _SUFFIX = ".json"
@@ -57,6 +58,10 @@ def list_operations(downloads_path: str | Path) -> list[Operation]:
     """Возвращает историю сортировок, самые свежие — первыми.
 
     Битые/чужие файлы в `.sorter` тихо пропускаются, чтобы история не падала.
+    Кодировку разбирает общий декодер (`util.read_text`): журнал лежит в папке
+    пользователя, и пересохранённый Блокнотом «в UTF-8 с BOM» файл переставал
+    читаться — то есть целая сортировка исчезала из списка, и откатить её было
+    уже нечем.
     """
     log_dir = Path(downloads_path) / ".sorter"
     if not log_dir.is_dir():
@@ -68,7 +73,7 @@ def list_operations(downloads_path: str | Path) -> list[Operation]:
         if stamp is None:
             continue
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(read_text(path))
         except (OSError, ValueError):
             continue
         if not isinstance(raw, list):

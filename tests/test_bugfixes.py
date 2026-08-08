@@ -2755,3 +2755,257 @@ def test_empty_keyword_written_by_hand_does_not_swallow_every_file():
 
     assert match_category("клип.mp4", "", categories) == "Медиа"
     assert match_category("отчёт.pdf", "", categories) is None
+
+
+# --- настройки, сохранённые Блокнотом не в UTF-8 ---
+
+
+def _rules_text():
+    return json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    }, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "cp1251"])
+def test_rules_saved_by_notepad_are_still_read(tmp_path, encoding):
+    """Правила, сохранённые Блокнотом не в UTF-8, объявлялись нечитаемыми.
+
+    README предлагает править `rules.json` руками, а «руками» на Windows — это
+    Блокнот, PowerShell и старые редакторы. Блокнот предлагает «UTF-8 с BOM»,
+    «UTF-16 LE» и «ANSI», `Out-File` в PowerShell 5.1 пишет UTF-16 по
+    умолчанию. Чтение шло ровно одним способом — `read_text(encoding="utf-8")`,
+    — и любой из этих файлов падал: BOM в начале для `json` не пробел, а
+    неожиданный символ, UTF-16 не декодируется вовсе.
+
+    Исход был худший из возможных: правил нет ни одного, `managed_folders`
+    пуст, и все загрузки уезжают в `Others` — той самой раскладкой, о которой
+    README говорит, что отличить её от честно неопознанных файлов нельзя. Про
+    сам файл при этом сообщалось «не читается (Expecting value: line 1 column
+    1)», то есть человека отправляли искать опечатку в JSON, которой нет.
+
+    Ключ DeepSeek читается во всех кодировках, которые предлагает Блокнот, с
+    тех пор как из-за UTF-16 гасло окно; содержимое текстовых файлов — с тех
+    пор как cp1251 съедал слова. Настройки, которые правят чаще всего,
+    оставались единственными, кто знал одну кодировку.
+    """
+    (tmp_path / "rules.json").write_text(_rules_text(), encoding=encoding)
+    (tmp_path / "config.json").write_text(
+        json.dumps({"downloads_path": str(tmp_path / "загрузки")},
+                   ensure_ascii=False), encoding=encoding)
+
+    config = Config.load(tmp_path / "config.json")
+
+    assert config.problems == []
+    assert config.categories == {"Медиа": ["клип"]}
+    assert config.downloads_path == str(tmp_path / "загрузки")
+
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "cp1251"])
+def test_hand_written_rules_saved_by_notepad_are_still_read(tmp_path, encoding):
+    """`overrides.json` наполняют руками — значит и Блокнотом тоже."""
+    (tmp_path / "rules.json").write_text(_rules_text(), encoding="utf-8")
+    (tmp_path / "config.json").write_text(
+        json.dumps({"downloads_path": str(tmp_path / "загрузки")}),
+        encoding="utf-8")
+    (tmp_path / "overrides.json").write_text(
+        json.dumps({"смета.pdf": "Медиа"}, ensure_ascii=False), encoding=encoding)
+
+    config = Config.load(tmp_path / "config.json")
+
+    assert config.problems == []
+    assert config.overrides == {"смета.pdf": "Медиа"}
+    assert config.overrides_unreadable is False
+
+
+def test_undo_journal_saved_by_notepad_is_still_a_record(tmp_path):
+    """Журнал отмены, пересохранённый руками, пропадал из истории молча.
+
+    Править его README не предлагает, но `entries_of` разбирает записи
+    осторожно именно потому, что лежит журнал в папке пользователя. Открыть его
+    и сохранить — обычное дело, когда откат чем-то не устроил; Блокнот
+    предлагает при этом «UTF-8 с BOM». После такого сохранения запись исчезала
+    из «🕘 Истории» вовсе: `list_operations` глотает нечитаемый файл, а сама
+    сортировка пропадает вместе с ним. Ни строки о том, что откатывать больше
+    нечем.
+    """
+    downloads = tmp_path / "загрузки"
+    log_dir = downloads / ".sorter"
+    log_dir.mkdir(parents=True)
+    entries = [{"src": str(downloads / "клип.mp4"),
+                "dst": str(downloads / "Медиа" / "Videos" / "клип.mp4")}]
+    (log_dir / "undo_20260808_120000.json").write_text(
+        json.dumps(entries, ensure_ascii=False), encoding="utf-8-sig")
+
+    ops = list_operations(downloads)
+
+    assert len(ops) == 1
+    assert ops[0].count == 1
+
+
+# --- испорченный config.json, затёртый при закрытии окна ---
+
+
+def test_unreadable_settings_are_not_overwritten(tmp_path):
+    """Закрытие окна затирало config.json, который не удалось прочитать.
+
+    Дорога короткая: человек правит `config.json` руками (README про него
+    рассказывает), забывает скобку, запускает программу. Разбор говорит «не
+    читается», подставляет `~/Downloads` и работает дальше. Человек нажимает
+    что-нибудь, закрывает окно — и `save` записывает на место файла свежий, с
+    папкой по умолчанию. Настроенный путь (`D:/Загрузки`), путь к папке 3D и
+    сам текст с опечаткой, который чинился в редакторе за минуту, исчезают
+    разом, и взять их неоткуда.
+
+    `overrides.json` от этого закрыт с тех пор, как выяснилось, что запись на
+    место нечитаемого файла стирает всё, что в нём лежало. `config.json` был
+    ровно в том же положении, только защиты у него не было.
+    """
+    cfg_path = tmp_path / "config.json"
+    broken = '{\n  "downloads_path": "D:/Загрузки",\n  "external_3d": {\n'
+    cfg_path.write_text(broken, encoding="utf-8")
+
+    config = Config.load(cfg_path)
+    assert config.settings_unreadable is True
+    assert any("не будет" in p for p in config.problems), (
+        "о том, что настройки не сохранятся, надо сказать при старте")
+
+    config.downloads_path = str(tmp_path / "другая")
+    config.save(cfg_path)
+
+    assert cfg_path.read_text(encoding="utf-8") == broken
+
+
+def test_healthy_settings_are_still_saved(tmp_path):
+    """Обычный config.json пишется как писался."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+    assert config.settings_unreadable is False
+    config.downloads_path = str(tmp_path / "новая")
+    config.save(cfg_path)
+
+    saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert saved["downloads_path"] == str(tmp_path / "новая")
+
+
+def test_missing_settings_file_is_still_created(tmp_path):
+    """Файла нет — терять нечего, пишем как обычно."""
+    cfg_path = tmp_path / "config.json"
+
+    config = Config.load(cfg_path)
+    config.downloads_path = str(tmp_path / "новая")
+    config.save(cfg_path)
+
+    assert cfg_path.exists()
+
+
+# --- ручное правило под номерное имя, набранное другим регистром ---
+
+
+@case_insensitive
+def test_rule_written_for_the_numbered_name_wins(tmp_path):
+    """Правило под точное имя проигрывало правилу для имени без номера.
+
+    Заходов в `find_override` по описанию четыре: точное имя, имя без
+    служебного номера, и то же самое по правилам файловой системы. Последние
+    два были свалены в один проход по словарю, поэтому решал не порядок
+    заходов, а порядок строк в `overrides.json`: та же пара правил, записанная
+    в другом порядке, отправляла файл в другую категорию.
+
+    Правило под номерное имя пишут нарочно — `отчёт (1).pdf` это второй отчёт,
+    и место у него своё. Регистр при этом какой угодно: имя копируют из
+    проводника, а тот показывает его как хочет.
+    """
+    config = make_config(tmp_path)
+    config.overrides = {"отчёт.pdf": "Медиа", "ОТЧЁТ (1).PDF": "Программы"}
+
+    assert explain_category("Отчёт (1).pdf", "", config) == ("Программы", "правило")
+
+    config.overrides = {"ОТЧЁТ (1).PDF": "Программы", "отчёт.pdf": "Медиа"}
+
+    assert explain_category("Отчёт (1).pdf", "", config) == ("Программы", "правило")
+
+
+@case_insensitive
+def test_rule_without_a_number_still_covers_the_numbered_file(tmp_path):
+    """Когда правила под номерное имя нет, работает правило для имени без него."""
+    config = make_config(tmp_path)
+    config.overrides = {"отчёт.pdf": "Медиа"}
+
+    assert explain_category("Отчёт (1).pdf", "", config) == ("Медиа", "правило")
+
+
+# --- пустой список расширений 3D ---
+
+
+def test_empty_3d_extension_list_is_reported(tmp_path):
+    """`"extensions": []` молча превращался в полный список по умолчанию.
+
+    Соседний случай — список, в котором после чистки не осталось ничего, —
+    назван вслух давно и по той же причине: человек сужал вынос, а получал все
+    четыре расширения, и модели уезжали из загрузок пачками. Пустой список
+    приходит тем же путём (недописанная правка, стёртые строки) и делает ровно
+    то же самое, только о нём не говорилось ни слова.
+    """
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "downloads_path": str(tmp_path),
+        "external_3d": {"enabled": True, "path": str(tmp_path / "All_3d"),
+                        "extensions": []},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.external_3d["extensions"] == ["3mf", "obj", "stl", "gcode"]
+    assert any("extensions" in p for p in config.problems), (
+        "подставили список по умолчанию — надо сказать об этом")
+
+
+def test_3d_extensions_listed_properly_stay_quiet(tmp_path):
+    """Нормальный список ни о чём не сообщает."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "downloads_path": str(tmp_path),
+        "external_3d": {"enabled": True, "path": str(tmp_path / "All_3d"),
+                        "extensions": ["stl"]},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(cfg_path)
+
+    assert config.external_3d["extensions"] == ["stl"]
+    assert [p for p in config.problems if "extensions" in p] == []
+
+
+# --- записи overrides.json, которые разбор отверг ---
+
+
+def test_rejected_rules_survive_a_rewrite(tmp_path):
+    """Кнопка «✨ИИ» стирала из overrides.json записи, забракованные разбором.
+
+    Разбор выбрасывает правило с непригодной категорией (`"Учёба "` — пробел по
+    краю, файловая система запишет папку иначе) и говорит об этом при старте:
+    «Пропущено». Звучит это как «в этот раз не применилось», а на деле первое
+    же нажатие «✨ИИ» записывало на место файла то, что осталось в памяти, — и
+    строка исчезала совсем, вместе с предупреждением, которое на неё
+    показывало. Чинить опечатку в редакторе было уже нечего.
+
+    Незнакомые ключи `config.json` сохранение возвращает на место ровно по этой
+    причине; у правил, которые пишут руками и второй копии которых нет, такой
+    защиты не было.
+    """
+    (tmp_path / "overrides.json").write_text(json.dumps({
+        "смета.pdf": "Учёба ",
+        "клип.mp4": "Медиа",
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "config.json").write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+
+    config = Config.load(tmp_path / "config.json")
+
+    assert config.overrides == {"клип.mp4": "Медиа"}
+    assert config.overrides_dropped == {"смета.pdf": "Учёба "}

@@ -490,3 +490,29 @@ def test_readable_overrides_are_still_written(window, tmp_path):
 
     assert json.loads(overrides.read_text(encoding="utf-8")) == {
         "старое.pdf": "Медиа", "новый.mp4": "Медиа"}
+
+
+def test_rule_rejected_by_the_parser_is_not_erased_by_the_answer(window, tmp_path):
+    """Ответ модели стирал строки, которые разбор отверг.
+
+    Правило с непригодной категорией (`"Учёба "` — пробел по краю, файловая
+    система запишет папку другую) до `overrides` не доезжает: разбор говорит
+    «Пропущено» и работает без него. Звучит это как «в этот раз не
+    применилось», человек собирается поправить опечатку в редакторе — а первое
+    же нажатие «✨ИИ» записывало на место файла то, что осталось в памяти, и
+    строка исчезала совсем, вместе с предупреждением, которое на неё
+    показывало. Второй копии у неё нет: ни истории, ни журнала отмены у
+    `overrides.json` не бывает.
+    """
+    win = window
+    overrides = tmp_path / "overrides.json"
+    overrides.write_text(json.dumps(
+        {"смета.pdf": "Учёба ", "старое.pdf": "Медиа"}, ensure_ascii=False),
+        encoding="utf-8")
+    win.config = ui_qt.Config.load(tmp_path / "config.json")
+    assert win.config.overrides == {"старое.pdf": "Медиа"}
+
+    win._ai_done({"новый.mp4": "Медиа"})
+
+    assert json.loads(overrides.read_text(encoding="utf-8")) == {
+        "смета.pdf": "Учёба ", "старое.pdf": "Медиа", "новый.mp4": "Медиа"}
