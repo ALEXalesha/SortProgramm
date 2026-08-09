@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QFileDialog, QDialog,
 )
 
-from .classifier import find_override
+from .classifier import find_override, override_key
 from .config import Config, OVERRIDES_FILENAME
 from .scanner import scan
 from .planner import build_plan, external_3d_warning, goes_by_extension, Move
@@ -187,7 +187,13 @@ class HistoryDialog(QDialog):
         self._reload()
 
     def _reload(self):
-        self.ops = history.list_operations(self.downloads_path)
+        # Журнал, который не прочитался, — это сортировка, которой в списке
+        # нет. Молчаливый пропуск делает окно неотличимым от «такой сортировки
+        # и не было»: файлы разложены, а вернуть их назад отсюда уже нельзя.
+        # Полный список имён уходит в подсказку мышью — строка под таблицей
+        # короткая, а чинить файл всё равно идут в проводник.
+        broken: list[str] = []
+        self.ops = history.list_operations(self.downloads_path, broken)
         self.table.setRowCount(len(self.ops))
         for r, op in enumerate(self.ops):
             when = op.when.strftime("%d.%m.%Y  %H:%M:%S")
@@ -196,8 +202,11 @@ class HistoryDialog(QDialog):
         empty = not self.ops
         self.undo_btn.setEnabled(not empty)
         self.hint.setText(
-            "История пуста — ещё ничего не перемещалось." if empty
-            else f"Записей: {len(self.ops)}. Выбери строку, чтобы откатить.")
+            ("История пуста — ещё ничего не перемещалось." if empty
+             else f"Записей: {len(self.ops)}. Выбери строку, чтобы откатить.")
+            + (f"  Не прочитано журналов: {len(broken)} — эти сортировки "
+               "отсюда не отменить." if broken else ""))
+        self.hint.setToolTip("\n".join(broken))
         if empty:
             self.details.setRowCount(0)
         else:
@@ -582,10 +591,10 @@ class GlassWindow(QWidget):
         return ""
 
     def _has_rule(self, filename: str) -> bool:
-        """Есть ли для имени готовое правило в overrides.
+        """Решали ли про это имя руками — неважно, годной вышла запись или нет.
 
-        Ищем ровно тем же способом, каким его найдёт разбор
-        (`classifier.find_override`): точное имя, имя без служебного номера и
+        Ищем ровно тем же способом, каким правило найдёт разбор
+        (`classifier.override_key`): точное имя, имя без служебного номера и
         то же самое по правилам файловой системы. Правило `клип.mp4` покрывает
         и `клип (1).mp4` — номер приписала сама программа при конфликте имён,
         файл от этого другим не стал, и вопрос про него уже оплачен.
@@ -593,8 +602,23 @@ class GlassWindow(QWidget):
         Расходиться с разбором тут нельзя ни в какую сторону: спросим лишнего —
         заплатим за правило, которое уже есть; не спросим нужного — файл
         останется неразобранным, а окно отчитается «нечего разбирать».
+
+        Записи, которые разбор отверг (`overrides_dropped`), считаются здесь
+        наравне с принятыми, и это половина всей защиты. Запись
+        `«клип.mp4» → «Медиа »` (пробел по краю — папка получится другая) в
+        `overrides` не доезжает: разбор о ней жалуется при старте словом
+        «Пропущено», человек слышит «в этот раз не применилось» и собирается
+        поправить опечатку в редакторе. Пока сюда смотрел один лишь
+        `overrides`, дальше шло по кругу: имя уходило в платный запрос как
+        ничьё, ответ модели ложился в `overrides` тем же ключом, а
+        `_save_overrides` склеивает отвергнутое с принятым так, что принятое
+        сильнее, — и строка, которую человек шёл чинить, заменялась догадкой
+        модели. Ни истории, ни журнала отмены у `overrides.json` нет, а
+        жалоба при следующем старте пропадала вместе со строкой: чинить стало
+        нечего.
         """
-        return find_override(self.config.overrides, filename) is not None
+        return (override_key(self.config.overrides, filename) is not None
+                or override_key(self.config.overrides_dropped, filename) is not None)
 
     def run_ai(self):
         """Спрашивает DeepSeek про то же, что разбирает обычная уборка.
@@ -651,12 +675,19 @@ class GlassWindow(QWidget):
         by_ext = [n for n in seen if goes_by_extension(n, self.config, to_3d)]
         askable = [n for n in seen if n not in set(by_ext)]
         names = [name for name in askable if not self._has_rule(name)]
-        covered = len(askable) - len(names)
+        covered = [n for n in askable
+                   if override_key(self.config.overrides, n) is not None]
+        # Правило есть, но разбор его не принял. Считаем отдельно от рабочих:
+        # «уже с правилами» про такое имя было бы неправдой — правило как раз
+        # не работает и ждёт починки в редакторе, о которой сказано при старте.
+        rejected = len(askable) - len(names) - len(covered)
         # Почему часть имён не спрашиваем. Молчать нельзя: «спрашиваю по 3
         # именам» на папке из тридцати файлов выглядит как потерянный список.
         skipped = []
         if covered:
-            skipped.append(f"{covered} уже с правилами")
+            skipped.append(f"{len(covered)} уже с правилами")
+        if rejected:
+            skipped.append(f"{rejected} с правилами, которые разбор отверг")
         if by_ext:
             skipped.append(f"{len(by_ext)} поедут по расширению")
         reasons = ", ".join(skipped)
@@ -699,8 +730,14 @@ class GlassWindow(QWidget):
         # «✨ИИ» стирало починку снова. Файлы без правила модель разбирает
         # по-прежнему, поэтому повторный запрос после новых категорий работает
         # как работал.
-        kept = [name for name in rules if name in self.config.overrides]
-        fresh = {n: c for n, c in rules.items() if n not in self.config.overrides}
+        # Сверяемся ровно тем же способом, каким кнопка решала, о чём вообще
+        # спрашивать (`_has_rule`). Раньше здесь стояло `n in overrides` —
+        # проверка по точному ключу и только по принятым правилам, — а
+        # спрашивали по другой, и в зазор проваливались записи, отвергнутые
+        # разбором: их не считали правилом ни там, ни тут, и ответ модели
+        # ложился поверх строки, написанной руками.
+        kept = [name for name in rules if self._has_rule(name)]
+        fresh = {n: c for n, c in rules.items() if not self._has_rule(n)}
         self.config.overrides.update(fresh)
         failure = self._save_overrides() if fresh else ""
         # Глубина — та же, что была у запроса: план должен показывать ровно те

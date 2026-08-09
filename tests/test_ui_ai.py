@@ -516,3 +516,52 @@ def test_rule_rejected_by_the_parser_is_not_erased_by_the_answer(window, tmp_pat
 
     assert json.loads(overrides.read_text(encoding="utf-8")) == {
         "смета.pdf": "Учёба ", "старое.pdf": "Медиа", "новый.mp4": "Медиа"}
+
+
+def test_rejected_rule_survives_an_answer_about_that_very_name(window, tmp_path):
+    """Та же беда, но с той стороны, откуда она и приходит.
+
+    Соседний тест проверял защиту на ответе про ДРУГОЕ имя — и на нём она
+    работала: отвергнутые записи возвращались на место при записи файла. А
+    случай, ради которого защиту и писали, оставался открытым, потому что имя
+    с отвергнутым правилом в `overrides` не попадает, значит `_has_rule` его
+    правилом не считает, значит оно уходит в платный запрос — и ответ про него
+    приходит почти наверняка. Дальше склейка `{**отвергнутое, **принятое}`
+    отдаёт победу принятому, и строка, написанная руками, заменяется догадкой
+    модели.
+
+    Итог для человека: разбор сказал «Пропущено, поправь в редакторе», он
+    нажал «✨ИИ» — и чинить стало нечего. Жалоба при следующем старте тоже
+    пропадает, вместе со строкой.
+    """
+    win = window
+    overrides = tmp_path / "overrides.json"
+    overrides.write_text(
+        json.dumps({"смета.pdf": "Учёба "}, ensure_ascii=False), encoding="utf-8")
+    win.config = ui_qt.Config.load(tmp_path / "config.json")
+    assert win.config.overrides_dropped == {"смета.pdf": "Учёба "}
+
+    win._ai_done({"смета.pdf": "Игры"})
+
+    assert json.loads(overrides.read_text(encoding="utf-8")) == {
+        "смета.pdf": "Учёба "}
+
+
+def test_name_with_a_rejected_rule_is_not_paid_for(window, tmp_path):
+    """За имя, о котором решение уже принято руками, платить не за что.
+
+    Вторая половина той же починки. Правило не работает, но оно есть, человеку
+    о нём сказано при старте, и чинится оно в редакторе. Отправлять такое имя
+    модели — это деньги за ответ, который применить всё равно нельзя.
+    """
+    win = window
+    (tmp_path / "загрузки" / "смета.pdf").write_text("x", encoding="utf-8")
+    overrides = tmp_path / "overrides.json"
+    overrides.write_text(
+        json.dumps({"смета.pdf": "Учёба "}, ensure_ascii=False), encoding="utf-8")
+    win.config = ui_qt.Config.load(tmp_path / "config.json")
+
+    win.run_ai()
+
+    assert FakeWorker.seen == ["новый.mp4"]
+    assert "разбор отверг" in win.status.text()

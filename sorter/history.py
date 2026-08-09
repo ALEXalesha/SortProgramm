@@ -54,29 +54,51 @@ def _parse_stamp(name: str) -> tuple[datetime, int] | None:
     return when, int(serial or 1)
 
 
-def list_operations(downloads_path: str | Path) -> list[Operation]:
+def list_operations(
+    downloads_path: str | Path, problems: list[str] | None = None
+) -> list[Operation]:
     """Возвращает историю сортировок, самые свежие — первыми.
 
-    Битые/чужие файлы в `.sorter` тихо пропускаются, чтобы история не падала.
-    Кодировку разбирает общий декодер (`util.read_text`): журнал лежит в папке
-    пользователя, и пересохранённый Блокнотом «в UTF-8 с BOM» файл переставал
-    читаться — то есть целая сортировка исчезала из списка, и откатить её было
-    уже нечем.
+    Чужие файлы в `.sorter` пропускаются молча: имя не наше — значит и запись
+    не наша. Кодировку разбирает общий декодер (`util.read_text`): журнал лежит
+    в папке пользователя, и пересохранённый Блокнотом «в UTF-8 с BOM» файл
+    переставал читаться — то есть целая сортировка исчезала из списка, и
+    откатить её было уже нечем.
+
+    А вот про журнал с нашим именем, который не разобрался, надо сказать вслух,
+    и для того здесь `problems` — тот же список жалоб, каким отвечает разбор
+    настроек (`config._read_json`). Пропускать такой файл по-прежнему
+    приходится: падать посреди списка нельзя. Но молчать о нём — значит
+    показать историю, в которой одной сортировки просто нет, и снаружи это
+    неотличимо ни от «её и не было», ни от «её уже отменили». Файлы при этом
+    разложены по папкам, а вернуть их назад больше нечем — ровно та беда, о
+    которой `apply` кричит отдельной строкой, когда журнал не записался. Здесь
+    он записался и испортился потом: оборванная запись, кончившееся место,
+    открыли в Блокноте и сохранили «как есть». Сам файл почти всегда цел и
+    чинится в редакторе за минуту — если знать, что он есть.
     """
     log_dir = Path(downloads_path) / ".sorter"
     if not log_dir.is_dir():
         return []
 
+    def complain(name: str, why: str) -> None:
+        if problems is not None:
+            problems.append(
+                f"{name}: журнал отмены не читается ({why}). Эта сортировка в "
+                "историю не попала, и отменить её отсюда нельзя.")
+
     ops: list[Operation] = []
-    for path in log_dir.glob(f"{_PREFIX}*{_SUFFIX}"):
+    for path in sorted(log_dir.glob(f"{_PREFIX}*{_SUFFIX}")):
         stamp = _parse_stamp(path.name)
         if stamp is None:
             continue
         try:
             raw = json.loads(read_text(path))
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            complain(path.name, str(exc))
             continue
         if not isinstance(raw, list):
+            complain(path.name, "ожидался список перемещений")
             continue
         when, serial = stamp
         ops.append(Operation(path, when, entries_of(raw), serial))

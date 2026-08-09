@@ -60,14 +60,19 @@ def rel_to(path: Path, root: Path) -> str:
         return str(path)
 
 
-def listing(pairs: list[tuple[str, str]], limit: int = REPORT_LIMIT) -> str:
-    """Пары «что → почему» списком. Длинный хвост сворачивается."""
-    lines = "\n".join(f"• {what}: {why}" for what, why in pairs[:limit])
-    tail = f"\n…и ещё {len(pairs) - limit}" if len(pairs) > limit else ""
+def listing(pairs: list[tuple[str, str]], limit: int | None = REPORT_LIMIT) -> str:
+    """Пары «что → почему» списком. Длинный хвост сворачивается.
+
+    `limit=None` — не сворачивать. Хвост режется ради окна, которое не
+    резиновое; в консоли резать нечего — там список листают.
+    """
+    shown = pairs if limit is None else pairs[:limit]
+    lines = "\n".join(f"• {what}: {why}" for what, why in shown)
+    tail = f"\n…и ещё {len(pairs) - len(shown)}" if len(pairs) > len(shown) else ""
     return lines + tail
 
 
-def report(result, limit: int = REPORT_LIMIT) -> str:
+def report(result, limit: int | None = REPORT_LIMIT) -> str:
     """Итог применения плана словами: сколько переехало, что нет и почему.
 
     Ошибки надо называть поимённо. Раньше окно показывало только их число —

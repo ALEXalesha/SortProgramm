@@ -115,3 +115,58 @@ def test_undo_operation_restores_and_removes_log(tmp_path):
     assert src.exists()
     assert not dst.exists()
     assert history.list_operations(tmp_path) == []
+
+
+def test_unreadable_log_is_named_not_swallowed(tmp_path):
+    """Битый журнал молча исчезал из истории вместе с целой сортировкой.
+
+    Файлы разложены по папкам, а вернуть их назад больше нечем: окно «🕘
+    История» показывает список, в котором этой сортировки просто нет, и
+    снаружи это неотличимо ни от «её и не было», ни от «её уже отменили».
+    Дорога сюда обычная: оборванная запись, кончившееся место, открыли в
+    Блокноте и сохранили. Сам файл почти всегда цел и чинится в редакторе за
+    минуту — если знать, что он есть.
+
+    Пропускать такой журнал по-прежнему приходится: падать посреди списка
+    нельзя. Но назвать его надо, и для того здесь `problems` — тот же список
+    жалоб, каким отвечает разбор настроек.
+    """
+    _write_log(tmp_path, "undo_20260102_030405.json", [{"src": "a", "dst": "b"}])
+    (tmp_path / ".sorter" / "undo_20260102_030406.json").write_text(
+        '[{"src": "c", "ds', encoding="utf-8")
+
+    problems: list[str] = []
+    ops = history.list_operations(tmp_path, problems)
+
+    assert len(ops) == 1, "читаемая сортировка осталась в списке"
+    assert len(problems) == 1
+    assert "undo_20260102_030406.json" in problems[0]
+
+
+def test_foreign_files_in_sorter_stay_silent(tmp_path):
+    """Чужое имя — чужая запись, о ней говорить нечего.
+
+    Иначе жалоба появлялась бы на каждый файл, который кто-то положил рядом,
+    и обесценила бы предупреждение о настоящем журнале.
+    """
+    _write_log(tmp_path, "undo_20260102_030405.json", [{"src": "a", "dst": "b"}])
+    (tmp_path / ".sorter" / "заметки.json").write_text("не json", encoding="utf-8")
+    (tmp_path / ".sorter" / "undo_заметка.json").write_text("не json", encoding="utf-8")
+
+    problems: list[str] = []
+    history.list_operations(tmp_path, problems)
+
+    assert problems == []
+
+
+def test_log_that_is_not_a_list_is_named_too(tmp_path):
+    """Журнал разобрался, но внутри не список перемещений — тот же исход."""
+    (tmp_path / ".sorter").mkdir()
+    (tmp_path / ".sorter" / "undo_20260102_030405.json").write_text(
+        '{"src": "a"}', encoding="utf-8")
+
+    problems: list[str] = []
+
+    assert history.list_operations(tmp_path, problems) == []
+    assert len(problems) == 1
+    assert "список" in problems[0]

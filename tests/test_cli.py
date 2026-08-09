@@ -8,6 +8,7 @@ import json
 import sys
 
 import main
+from sorter.mover import Result
 
 
 def write_config(tmp_path, data, rules=None):
@@ -231,3 +232,67 @@ def test_cli_stays_quiet_when_3d_is_set_up(tmp_path, monkeypatch, capsys):
     main.run_cli(None, do_apply=False, to_3d=None, deep=False)
 
     assert "не указан" not in capsys.readouterr().out
+
+
+def _apply_with(tmp_path, monkeypatch, capsys, result):
+    """Гоняет `--apply` на готовом итоге: проверяем печать, а не перемещения.
+
+    Оговорка «лёг под другим именем» возникает, только когда цель занимают
+    МЕЖДУ планом и применением, — через один вызов такое не подстроить, а
+    проверить надо именно слова отчёта.
+    """
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "клип.mp4").write_text("x", encoding="utf-8")
+    cfg_path = write_config(tmp_path, {"downloads_path": str(downloads)})
+    monkeypatch.setattr(main, "CONFIG_PATH", cfg_path)
+    monkeypatch.setattr(main, "apply", lambda moves, config, dry_run=True: result)
+
+    main.run_cli(None, do_apply=True, to_3d=False, deep=False)
+
+    return capsys.readouterr().out
+
+
+def test_cli_prints_the_same_report_as_the_windows(tmp_path, monkeypatch, capsys):
+    """Отчёт общий на три интерфейса — это обещание `util.report`, и консоль
+    его не выполняла.
+
+    Она печатала итог своими словами, и пропадал ровно тот заголовок, ради
+    которого отчёт собрали в одном месте. Оговорка «лёг под другим именем»
+    шла сразу за списком ошибок, без единого слова между ними: строка
+    «клип.mp4: в цели уже есть …» читалась как ещё одна неудача, хотя файл
+    переехал и лежит под соседним именем. Проверять правила через консоль
+    README советует именно потому, что консоль показывает то же, что окно.
+    """
+    out = _apply_with(tmp_path, monkeypatch, capsys, Result(
+        planned=2, moved=2,
+        notes=[("клип.mp4", "в цели уже есть «клип.mp4», положили как «клип (1).mp4»")],
+        errors=[("отчёт.pdf", "нет файла")]))
+
+    assert "Не переехали:" in out
+    assert "Легли под другим именем:" in out, (
+        f"оговорка ушла без заголовка, вперемешку с ошибками:\n{out}")
+    assert "клип (1).mp4" in out
+
+
+def test_cli_names_the_undo_log_it_could_not_write(tmp_path, monkeypatch, capsys):
+    """Файлы разложены, а вернуть их назад нечем — про это тоже общий текст."""
+    out = _apply_with(tmp_path, monkeypatch, capsys,
+                      Result(planned=1, moved=1, undo_failed="нет места на диске"))
+
+    assert "Отменить эту сортировку не выйдет" in out
+    assert "нет места на диске" in out
+
+
+def test_cli_does_not_cut_the_report_short(tmp_path, monkeypatch, capsys):
+    """Хвост сворачивается ради окна, которое не резиновое. Консоль листают.
+
+    Свернуть список в консоли значит спрятать имена, за которыми туда и идут:
+    `python main.py --cli --apply` — рабочий инструмент, а не панель с итогом.
+    """
+    out = _apply_with(tmp_path, monkeypatch, capsys, Result(
+        planned=12, moved=0,
+        errors=[(f"файл{i:02}.dat", "занят другой программой") for i in range(12)]))
+
+    assert "…и ещё" not in out
+    assert "файл11.dat" in out

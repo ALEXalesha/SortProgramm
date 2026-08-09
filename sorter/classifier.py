@@ -38,8 +38,8 @@ def base_name(filename: str) -> str:
     return _DEDUP_SUFFIX.sub("", stem) + dot + extension
 
 
-def find_override(overrides: dict[str, str], filename: str) -> str | None:
-    """Ручное правило для имени файла. None, если правила нет.
+def override_key(overrides: dict, filename: str) -> str | None:
+    """Ключ `overrides`, которым решается судьба имени. None — записи нет.
 
     Ищется в четыре захода: точное имя, имя без служебного номера, и то же
     самое по правилам файловой системы (`name_key`). Точное совпадение всегда
@@ -70,17 +70,32 @@ def find_override(overrides: dict[str, str], filename: str) -> str | None:
 
     Перебор по всему словарю нестрашен: он случается только когда точного
     совпадения нет, а правил в `overrides.json` сотни, не миллионы.
+
+    Отдаётся ключ, а не категория, потому что спрашивают об этом словаре два
+    разных вопроса. «Куда поедет файл» — это категория (`find_override`).
+    «Решали ли про это имя руками» — это сам факт записи, и задаёт его окно
+    перед тем, как платить модели за вопрос. Второй вопрос задают и о записях,
+    которые разбор отверг (`Config.overrides_dropped`): категории у них нет —
+    она-то и непригодна, — а строка в файле есть, писали её руками, и затирать
+    её ответом модели нельзя. Пока ответ был один на оба вопроса, второй
+    приходилось задавать через первый, и записи без годной категории для окна
+    не существовали вовсе.
     """
     stripped = base_name(filename)
     for key in (filename, stripped):
-        value = overrides.get(key)
-        if value:
-            return value
+        if overrides.get(key):
+            return key
     for wanted in (name_key(filename), name_key(stripped)):
         for key, value in overrides.items():
             if value and name_key(key) == wanted:
-                return value
+                return key
     return None
+
+
+def find_override(overrides: dict[str, str], filename: str) -> str | None:
+    """Ручное правило для имени файла. None, если правила нет (`override_key`)."""
+    key = override_key(overrides, filename)
+    return overrides[key] if key is not None else None
 
 
 def extension_of(filename: str) -> str:

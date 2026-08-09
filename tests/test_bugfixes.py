@@ -760,18 +760,60 @@ def test_full_managed_folders_stay_silent(tmp_path):
     assert Config.load(cfg_path).problems == []
 
 
-def test_empty_managed_folders_is_not_nagged_about(tmp_path):
-    """Списка нет вовсе — это не «забыли строку», а другой способ настройки.
+def test_empty_managed_folders_is_named_once(tmp_path):
+    """Пустой список — не «другой способ настройки», а выключенное переразложение.
 
-    Жаловаться на каждую категорию в таком конфиге значит завалить окно
-    предупреждениями там, где человек ничего не забывал.
+    Так тут и было записано: список без строк считался настройкой, в которой
+    человек ничего не забывал, и разбор про него молчал. Убеждение оказалось
+    неверным. Обход сверяет имя папки со списком (`scanner._walk_managed`), и
+    пустой список не пропускает никого: «Переразложить старое» дальше корня
+    загрузок не идёт — галочка стоит, план строится, старые загрузки в нём не
+    участвуют. Уборка опустевших папок держится на том же списке и тоже не
+    делает ничего.
+
+    Жалоба поэтому нужна, но одна на всех, а не по строке на категорию: шума
+    боялись правильно, а вот молчали зря.
     """
     cfg_path = _write_rules(tmp_path, {
         "categories": {"Медиа": ["клип"]},
         "type_map": {"Videos": ["mp4"]},
     })
 
-    assert Config.load(cfg_path).problems == []
+    problems = Config.load(cfg_path).problems
+
+    assert len(problems) == 1
+    assert "managed_folders" in problems[0]
+
+
+def test_empty_managed_folders_really_disables_resorting(tmp_path):
+    """Доказательство к жалобе: без списка переразложение не двигает старое.
+
+    Файл лежит в `Others/Misc`, хотя по нынешним правилам ему место в
+    `Медиа/Videos`. С полным списком «Переразложить старое» его находит, без
+    списка — нет, и снаружи это неотличимо от прибранной папки.
+    """
+    def plan_for(managed):
+        root = tmp_path / ("да" if managed else "нет")
+        downloads = root / "загрузки"
+        (downloads / "Others" / "Misc").mkdir(parents=True)
+        (downloads / "Others" / "Misc" / "старое.mp4").write_text("x", encoding="utf-8")
+        rules = {
+            "categories": {"Медиа": ["mp4"]},
+            "type_map": {"Videos": ["mp4"]},
+            "fallback_category": "Others",
+            "fallback_type": "Misc",
+        }
+        if managed:
+            rules["managed_folders"] = ["Медиа", "Videos", "Others", "Misc"]
+        (root / "rules.json").write_text(
+            json.dumps(rules, ensure_ascii=False), encoding="utf-8")
+        (root / "config.json").write_text(
+            json.dumps({"downloads_path": str(downloads)}, ensure_ascii=False),
+            encoding="utf-8")
+        return build_plan(Config.load(root / "config.json"), deep=True)
+
+    assert [mv.dst.name for mv in plan_for(True)] == ["старое.mp4"]
+    assert plan_for(False) == []
 
 
 # --- пустые папки расширений во внешней папке 3D ---
@@ -1134,7 +1176,7 @@ def make_3d_config(root, path, enabled=True):
 def test_incomplete_3d_path_does_not_take_files_out_of_downloads(tmp_path, monkeypatch):
     r"""Неполный путь уносил модели в рабочую папку программы.
 
-    Категорию от пути программа бережёт (`_is_folder_name`): полный путь,
+    Категорию от пути программа бережёт (`folder_name_problem`): полный путь,
     вписанный вместо имени папки, уносит файлы из загрузок неизвестно куда.
     С путём внешней папки 3D всё зеркально: имя без диска (`All_3d`, опечатка,
     правка руками) — это путь от рабочей папки, а она у ярлыка какая угодно.

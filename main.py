@@ -12,7 +12,7 @@ from pathlib import Path
 from sorter.config import Config, path_3d_reason
 from sorter.planner import build_plan, external_3d_warning
 from sorter.mover import apply
-from sorter.util import rel_to
+from sorter.util import rel_to, report
 
 # В собранном .exe (PyInstaller onefile) config.json/overrides.json лежат рядом с .exe,
 # чтобы их можно было править без пересборки. В обычном запуске — рядом с main.py.
@@ -79,18 +79,22 @@ def run_cli(path: str | None, do_apply: bool, to_3d: bool | None, deep: bool) ->
 
     if do_apply:
         result = apply(moves, config, dry_run=False)
-        print(f"\nПеремещено: {result.moved}, ошибок: {len(result.errors)}")
-        for src, err in result.errors:
-            print(f"  ОШИБКА {src}: {err}")
-        for src, note in result.notes:
-            print(f"  {src}: {note}")
+        # Отчёт общий на три интерфейса (`util.report`) — это его обещание, и
+        # до сих пор консоль его не выполняла: она печатала итог своими
+        # словами. Пропадал при этом ровно тот заголовок, ради которого отчёт
+        # и собрали в одном месте. Оговорки («лёг под другим именем») шли
+        # сразу за списком ошибок, без единого слова между ними, и строка
+        # «клип.mp4: в цели уже есть …» читалась как ещё одна неудача — при
+        # том, что файл переехал и лежит под соседним именем. Сверять правила
+        # через консоль README советует именно потому, что консоль показывает
+        # то же, что окно.
+        #
+        # Хвост не сворачиваем (`limit=None`): десять строк — предел окна, а
+        # не консоли, где список листают.
+        print()
+        print(report(result, limit=None))
         if result.undo_log:
             print(f"Лог отмены: {result.undo_log}")
-        elif result.undo_failed:
-            # Файлы разложены, а отменять нечем. Раньше эта строка приезжала
-            # в общий список ошибок и печаталась как файл, который не переехал.
-            print(f"Отменить эту сортировку не выйдет: журнал отмены "
-                  f"не записан ({result.undo_failed})")
     else:
         print("\n(режим показа — ничего не перемещено; добавь --apply чтобы применить)")
 
