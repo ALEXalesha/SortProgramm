@@ -8,7 +8,7 @@ import pytest
 from sorter.ai import load_api_key, parse_ai_response, useful_rules
 from sorter.config import Config, usable_3d_path
 from sorter.classifier import explain_category, match_category, match_type
-from sorter.history import list_operations
+from sorter.history import list_operations, undo_operation
 from sorter.mover import apply, undo, Result
 from sorter.planner import build_plan, external_3d_warning, Move
 from sorter.scanner import scan
@@ -3136,3 +3136,241 @@ def test_rejected_rules_survive_a_rewrite(tmp_path):
 
     assert config.overrides == {"клип.mp4": "Медиа"}
     assert config.overrides_dropped == {"смета.pdf": "Учёба "}
+
+
+# --- файл, занявший путь СВОЕЙ цели, и порядок «кто кому уступает» ---
+
+
+def test_file_named_like_the_fallback_category_still_moves(tmp_path):
+    """Файл `Others` ронял всю запасную категорию, и починить это было нечем.
+
+    Перестановка «сначала виновники» (`_vacate_first`) разводит того, кто занял
+    путь, и того, кому этот путь нужен. Своей собственной цели она не помогает:
+    файл `Others` без расширения едет в `Others/Misc/Others`, то есть
+    загораживает папку, которую надо создать для него же, и двигать вперёд
+    некого. `mkdir` падал с `[WinError 183]` — и не на нём одном, а на каждом
+    файле, которому место в запасной категории: неопознанное не уезжало вообще
+    никуда.
+
+    Со следующей уборки не менялось ничего, в отличие от разобранного случая с
+    чужой папкой: виновник-то оставался лежать на месте. Отчёт при этом честный,
+    но говорит про папку назначения, а не про файл рядом, — связать одно с
+    другим, глядя на `[WinError 183]`, нельзя.
+    """
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "Others", "это файл, а не папка")
+    touch(downloads / "неведомое.qqq")
+    config = make_config(downloads)
+
+    result = apply(build_plan(config), config, dry_run=False)
+
+    assert result.errors == []
+    assert result.moved == 2
+    assert (downloads / "Others" / "Misc" / "Others").is_file()
+    assert (downloads / "Others" / "Misc" / "неведомое.qqq").is_file()
+
+
+def test_two_blockers_are_let_out_in_the_right_order(tmp_path):
+    """Виновники не были упорядочены между собой — и один ронял другого.
+
+    Устойчивая сортировка «сначала все виновники, потом все остальные» их
+    взаимный порядок оставляла алфавитным. Хватает двоих: файл `Медиа` едет в
+    `Others/Misc/Медиа`, файл `Others` — в `Others/Misc/Others`, и `Медиа` по
+    алфавиту первый. `mkdir` для `Others/Misc` натыкается на файл `Others`,
+    который ещё никуда не уехал, — `[WinError 183]` возвращается ровно там,
+    откуда его выгоняли, только виновник теперь второй.
+    """
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "Медиа", "файл с именем категории")
+    touch(downloads / "Others", "файл с именем запасной категории")
+    touch(downloads / "клип.mp4")
+    config = make_config(downloads)
+
+    result = apply(build_plan(config), config, dry_run=False)
+
+    assert result.errors == []
+    assert result.moved == 3
+    assert (downloads / "Others" / "Misc" / "Медиа").is_file()
+    assert (downloads / "Others" / "Misc" / "Others").is_file()
+    assert (downloads / "Медиа" / "Videos" / "клип.mp4").is_file()
+
+
+def test_undo_brings_back_the_file_that_gave_way(tmp_path):
+    """Уступивший дорогу возвращался как `Медиа (1)` — то есть не возвращался.
+
+    Файл `Медиа` уезжает первым, чтобы освободить путь под папку `Медиа`, а при
+    откате возвращается последним. К его очереди пустая папка `Медиа`, созданная
+    той же сортировкой, всё ещё стояла на его месте: уборка опустевших папок шла
+    одним заходом в самом конце. Путь занят — файл ложился рядом под номером.
+
+    Оговорку откат называл честно, но обещание у него другое: вернуть как было.
+    Половина случая была починена (`apply` уступает дорогу), вторая — нет.
+    """
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "Медиа", "это файл, а не папка")
+    touch(downloads / "клип.mp4")
+    config = make_config(downloads)
+    result = apply(build_plan(config), config, dry_run=False)
+    assert result.moved == 2
+
+    notes = undo(result.undo_log, config)
+
+    assert notes == [], "откат вернул файлы не на свои места"
+    assert (downloads / "Медиа").is_file()
+    assert (downloads / "клип.mp4").is_file()
+    assert sorted(p.name for p in downloads.iterdir()) == [
+        ".sorter", "Медиа", "клип.mp4"]
+
+
+def test_undo_brings_back_the_file_that_blocked_its_own_target(tmp_path):
+    """Файл `Others` лежит ВНУТРИ папки, которой должен снова стать.
+
+    `Others/Misc/Others` — вернуть его на место можно, только сперва вынув из
+    этого каркаса: пока файл внутри, папку `Others` не убрать, а значит путь
+    занят и откат кладёт `Others (1)`. Обход в `apply` без обратного хода в
+    `undo` — та же половина случая, что и с уступившим дорогу.
+    """
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "Others", "это файл, а не папка")
+    touch(downloads / "неведомое.qqq")
+    config = make_config(downloads)
+    result = apply(build_plan(config), config, dry_run=False)
+    assert result.moved == 2
+
+    notes = undo(result.undo_log, config)
+
+    assert notes == []
+    assert (downloads / "Others").is_file()
+    assert (downloads / "неведомое.qqq").is_file()
+
+
+# --- откат сортировки, поверх которой прошла следующая ---
+
+
+def test_journal_survives_when_the_file_moved_on(tmp_path):
+    """Откат старой сортировки стирал журнал, не вернув ни одного файла.
+
+    Порядок работы самый обычный: прибрались, поправили правила, нажали
+    «Переразложить старое». В «🕘 Истории» эти сортировки стоят двумя строками
+    подряд, и человек выбирает нижнюю — ту, с которой всё началось. По новому
+    пути файла уже нет (его унесла верхняя сортировка), откат честно говорит
+    «возвращать нечего» — и удалял журнал, потому что смотрел на один конец
+    записи: пусто по новому пути значит «вернулся».
+
+    Вместе с журналом исчезала единственная запись о том, откуда файл вообще
+    взялся. Откатив после этого верхнюю строку, вернуть его в корень было уже
+    нечем: цепочка рвалась молча и необратимо.
+    """
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "клип.mp4")
+    config = make_config(downloads)
+    apply(build_plan(config), config, dry_run=False)
+    moved = downloads / "Медиа" / "Videos" / "клип.mp4"
+    assert moved.is_file()
+    # следующая сортировка унесла файл дальше — правила поменялись
+    second = apply([Move(moved, downloads / "Код" / "Videos" / "клип.mp4")],
+                   config, dry_run=False)
+    assert second.moved == 1
+
+    older = list_operations(downloads)[-1]
+    notes = undo_operation(older, config)
+
+    assert notes, "откат ничего не вернул и об этом не сказал"
+    assert older.log_path.exists(), "журнал стёрт, вернуть файл в корень больше нечем"
+    # а теперь по порядку, сверху вниз — и файл дома
+    for op in list_operations(downloads):
+        undo_operation(op, config)
+    assert (downloads / "клип.mp4").is_file()
+
+
+def test_journal_goes_away_when_the_files_did_come_back(tmp_path):
+    """Обычный откат по-прежнему уносит запись из истории."""
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "клип.mp4")
+    config = make_config(downloads)
+    apply(build_plan(config), config, dry_run=False)
+
+    op = list_operations(downloads)[0]
+    assert undo_operation(op, config) == []
+
+    assert not op.log_path.exists()
+    assert list_operations(downloads) == []
+
+
+# --- обновление старой установки ---
+
+
+def test_upgrade_keeps_hand_written_rules_in_config(tmp_path):
+    """Приехавший `rules.json` стирал правила из `config.json` при первом закрытии.
+
+    Дорога сюда одна и обычная — обновление. Установщик кладёт рядом
+    `rules.json` и не трогает `config.json`, так что у обновившегося
+    пользователя оказываются оба файла. С этой минуты правила читаются из
+    нового, а разделы старого выбрасывались как «не настройки»: первое же
+    закрытие окна стирало категории, шаблоны и `type_map`, которые README
+    прошлой версии предлагал править именно там. Второй копии у них нет.
+
+    Строка, дописанная в тот же файл рукой (`моя_заметка`), сохранение при этом
+    переживала — то есть файл берёг что угодно, кроме того, ради чего его и
+    открывали.
+    """
+    (tmp_path / "config.json").write_text(json.dumps({
+        "downloads_path": str(tmp_path),
+        "categories": {"Моё": ["моёслово"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Моё", "Videos"],
+        "моя_заметка": "правил руками три года",
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(tmp_path / "config.json")
+    config.save(tmp_path / "config.json")
+
+    written = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert written["categories"] == {"Моё": ["моёслово"]}
+    assert written["managed_folders"] == ["Моё", "Videos"]
+    assert written["моя_заметка"] == "правил руками три года"
+    # а работают при этом правила из rules.json
+    assert config.categories == {"Медиа": ["клип"]}
+
+
+def test_upgrade_says_that_rules_in_config_stopped_working(tmp_path):
+    """О том, что правки в `config.json` больше ни на что не влияют, молчали.
+
+    Человек правит категории там, где правил всегда, перезапускает программу и
+    видит прежнюю раскладку: ни ошибки, ни намёка на то, что читают теперь
+    другой файл. Строки мы больше не стираем — но узнать, что их надо
+    перенести, было неоткуда.
+    """
+    (tmp_path / "config.json").write_text(json.dumps({
+        "downloads_path": str(tmp_path),
+        "categories": {"Моё": ["моёслово"]},
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "managed_folders": ["Медиа", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    problems = Config.load(tmp_path / "config.json").problems
+
+    said = [p for p in problems if "больше не действуют" in p]
+    assert said, f"о мёртвых правилах в config.json не сказано: {problems}"
+    assert "categories" in said[0]
+
+
+def test_config_without_stale_rules_stays_quiet(tmp_path):
+    """Обычная установка про правила в config.json молчит — их там нет."""
+    (tmp_path / "config.json").write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "managed_folders": ["Медиа", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    problems = Config.load(tmp_path / "config.json").problems
+
+    assert [p for p in problems if "больше не действуют" in p] == []

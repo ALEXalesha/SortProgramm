@@ -33,7 +33,7 @@ class Result:
 
 
 def _vacate_first(moves: list[Move]) -> list[Move]:
-    """Ставит вперёд то, что занимает путь чужой папки назначения.
+    """Ставит каждого впереди тех, кому он загораживает папку назначения.
 
     Файл `Медиа` без расширения — обычный файл, и план у него правильный:
     уезжает в `Others/Misc`, как всё неопознанное. Но пока он лежит в корне,
@@ -48,12 +48,52 @@ def _vacate_first(moves: list[Move]) -> list[Move]:
     виновник к тому времени уехал, — и это тоже плохо: поломка, которая
     исчезает при повторе, выглядит случайной.
 
-    Сортировка устойчивая, поэтому всё, что чужих путей не занимает, идёт как
-    шло. Свободное имя `apply` подбирает заново перед каждым перемещением
-    (`_free_name`), так что перестановка ничьё имя не путает.
+    Уступать дорогу приходится по цепочке, и одного разворота на это не хватало.
+    Раньше здесь стояла устойчивая сортировка «сначала все виновники, потом
+    все остальные»: она разводит виновника и пострадавшего, но между собой
+    виновников не упорядочивает никак — их взаимный порядок оставался
+    алфавитным. Достаточно двух: файл `3D` едет в `Others/Misc/3D`, файл
+    `Others` — в `Others/Misc/Others`, и `3D` по алфавиту первый. `mkdir` для
+    `Others/Misc` натыкается на файл `Others`, который ещё никуда не уехал, —
+    и `[WinError 183]` возвращается ровно там, откуда его выгоняли, только
+    поводом теперь второй виновник, а не первый.
+
+    Поэтому порядок здесь не сортировка, а обход зависимостей: перед каждым
+    перемещением выпускаем те, чьи файлы стоят на пути его папки назначения, —
+    и так далее вглубь. Цепочка короткая по своей природе: у назначения всего
+    две значащих ступени (`Категория/Тип`), а `guard` держит на случай, если
+    двое загородили дорогу друг другу — такой узел не развязать перестановкой,
+    и крутиться в нём бесконечно незачем.
+
+    Всё, что чужих путей не занимает, идёт как шло: без виновников обход просто
+    перекладывает список по порядку. Свободное имя `apply` подбирает заново
+    перед каждым перемещением (`_free_name`), так что перестановка ничьё имя не
+    путает.
+
+    Своей собственной цели перестановка не помогает: файл `Others` уезжает в
+    `Others/Misc/Others`, то есть занимает путь, который надо создать для него
+    же, и подвинуть его вперёд некуда. Этот случай разбирает `apply` — он
+    отводит такой файл в сторону под свободным именем.
     """
-    blocking = {parent for mv in moves for parent in mv.dst.parents}
-    return sorted(moves, key=lambda mv: mv.src not in blocking)
+    by_src: dict[Path, Move] = {mv.src: mv for mv in moves}
+    ordered: list[Move] = []
+    done: set[int] = set()
+
+    def release(mv: Move, guard: set[int]) -> None:
+        if id(mv) in done or id(mv) in guard:
+            return
+        guard.add(id(mv))
+        for parent in mv.dst.parents:
+            blocker = by_src.get(parent)
+            if blocker is not None and blocker is not mv:
+                release(blocker, guard)
+        guard.discard(id(mv))
+        done.add(id(mv))
+        ordered.append(mv)
+
+    for mv in moves:
+        release(mv, set())
+    return ordered
 
 
 def apply(moves: list[Move], config: Config, dry_run: bool = True) -> Result:
@@ -63,17 +103,38 @@ def apply(moves: list[Move], config: Config, dry_run: bool = True) -> Result:
 
     performed: list[dict[str, str]] = []
     for mv in _vacate_first(moves):
+        # Куда файл отведён в сторону, если он занимал путь собственной цели.
+        # None — не отводили.
+        aside: Path | None = None
         try:
             if not mv.src.exists():
                 raise FileNotFoundError(f"нет файла: {mv.src}")
+            source = mv.src
+            if mv.src in mv.dst.parents:
+                # Файл занял путь, который надо создать для него же: `Others`
+                # без расширения едет в `Others/Misc/Others`. Перестановка
+                # (`_vacate_first`) тут бессильна — двигать вперёд некого, — и
+                # `mkdir` падал с `[WinError 183]` не только на нём, а на всей
+                # категории разом: ни один файл, которому место в `Others`, не
+                # переезжал. Отчёт при этом называл папку назначения, которую
+                # не создать, а не файл, лежащий рядом и мешающий, — связать
+                # одно с другим было нельзя, и со следующей уборки ничего не
+                # менялось: виновник-то остался на месте.
+                #
+                # Отводим его в сторону под свободным именем, освобождаем путь,
+                # а в журнал отмены пишем исходное имя — откат вернёт файл
+                # именно туда, откуда его взяли.
+                aside = _free_name(mv.src, as_dir=mv.src.is_dir())
+                shutil.move(str(mv.src), str(aside))
+                source = aside
             mv.dst.parent.mkdir(parents=True, exist_ok=True)
             # Свободное имя planner подбирал по состоянию на момент плана, а
             # между «Очистить» и «Применить» проходит сколько угодно времени.
             # Занятую за это время цель `shutil.move` затирает молча (файл) или
             # вкладывает в неё (папка) — и то и другое снаружи выглядит как
             # успешная сортировка. Проверяем ещё раз, прямо перед перемещением.
-            dst = _free_name(mv.dst, as_dir=mv.src.is_dir())
-            shutil.move(str(mv.src), str(dst))
+            dst = _free_name(mv.dst, as_dir=source.is_dir())
+            shutil.move(str(source), str(dst))
             # Оговорку ставим только после того, как перемещение прошло. Раньше
             # она писалась заранее, и упавший `shutil.move` (файл открыт другой
             # программой, кончилось место) давал отчёт, который спорит сам с
@@ -86,6 +147,14 @@ def apply(moves: list[Move], config: Config, dry_run: bool = True) -> Result:
             performed.append({"src": str(mv.src), "dst": str(dst)})
             result.moved += 1
         except OSError as exc:
+            # Отведённый в сторону файл возвращаем на место: иначе неудача на
+            # полпути оставила бы его лежать под именем `Others (1)`, которого
+            # никто не просил и о котором в отчёте не сказано ни слова.
+            if aside is not None and aside.exists() and not mv.src.exists():
+                try:
+                    shutil.move(str(aside), str(mv.src))
+                except OSError:
+                    pass
             result.errors.append((str(mv.src), str(exc)))
 
     # Пустой журнал — это запись «0 файлов» в истории, которая ничего не
@@ -248,24 +317,44 @@ def undo(undo_log: Path | str, config: Config | None = None) -> list[tuple[str, 
         return [(str(log_path), f"журнал отмены не читается: {exc}")]
 
     notes: list[tuple[str, str]] = []
-    restored: list[dict[str, str]] = []
     for entry in reversed(entries_of(entries)):
         src, dst = Path(entry["src"]), Path(entry["dst"])
         if not dst.exists():
             notes.append((str(dst), "возвращать нечего: файла тут больше нет"))
             continue
+        source = dst
+        if src in dst.parents and config is not None:
+            # Файл лежит ВНУТРИ папки, которой должен снова стать: `Others` без
+            # расширения уехал в `Others/Misc/Others`, и `apply` для этого
+            # отводил его в сторону. Обратный ход тот же, только задом наперёд:
+            # вынимаем файл из этого каркаса под свободным именем, даём уборке
+            # снести опустевшие `Others/Misc` и `Others`, и лишь потом кладём
+            # на место. Без этого путь занят собственной папкой файла, и откат
+            # возвращает его как `Others (1)` — то есть обещание «вернём как
+            # было» не выполняется ровно в том случае, ради которого в `apply`
+            # и заведён обход.
+            aside = _free_name(src, as_dir=dst.is_dir())
+            try:
+                shutil.move(str(dst), str(aside))
+            except OSError as exc:
+                notes.append((str(dst), str(exc)))
+                continue
+            _cleanup_emptied([{"src": str(dst), "dst": str(aside)}], config)
+            source = aside
         target = src
         if src.exists():
             # Номер ставим по природе того, что возвращаем, а не того, что
             # заняло место: иначе видео, упёршееся в папку `клип.mp4`, вернётся
             # как `клип.mp4 (1)` — расширение перестало быть последним, и файл
             # больше не открывается двойным щелчком.
-            target = _free_name(src, as_dir=dst.is_dir())
+            target = _free_name(src, as_dir=source.is_dir())
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(dst), str(target))
+            shutil.move(str(source), str(target))
         except OSError as exc:
-            notes.append((str(dst), str(exc)))
+            # Про место говорим то, где файл лежит на самом деле: отведённый в
+            # сторону лежит уже не по тому пути, который записан в журнале.
+            notes.append((str(source), str(exc)))
         else:
             # Про новое имя говорим только когда файл под ним и правда лежит.
             # Заранее поставленная оговорка после упавшего `shutil.move`
@@ -273,11 +362,22 @@ def undo(undo_log: Path | str, config: Config | None = None) -> list[tuple[str, 
             # ради которого откат вообще отчитывается.
             if target != src:
                 notes.append((str(src), f"путь занят, вернули как «{target.name}»"))
-            restored.append({"src": str(dst), "dst": str(target)})
-
-    if config is not None:
-        # Откат опустошает ровно те же папки, которые наполнила сортировка,
-        # поэтому и убирается тем же способом — от места, откуда унесли файл,
-        # вверх, пока папки пустые и принадлежат программе.
-        _cleanup_emptied(restored, config)
+            came_back = {"src": str(source), "dst": str(target)}
+            if config is not None:
+                # Откат опустошает ровно те же папки, которые наполнила
+                # сортировка, поэтому и убирается тем же способом — от места,
+                # откуда унесли файл, вверх, пока папки пустые и принадлежат
+                # программе.
+                #
+                # Убираем по ходу, а не одной уборкой в конце, и это не мелочь.
+                # Файл, уступивший дорогу собственной категории (`Медиа` без
+                # расширения рядом с `клип.mp4`), уезжает первым, а
+                # возвращается последним — и к его очереди папка `Медиа`,
+                # созданная той же сортировкой, ещё стояла пустая на его месте.
+                # Путь занят, файл ложился рядом как `Медиа (1)`, и откат,
+                # который обещает вернуть всё как было, оставлял вместо файла
+                # переименованную копию. Оговорку он при этом честно называл —
+                # но чинить её человеку пришлось бы руками, а поводом была
+                # пустая папка, которую всё равно предстояло убрать.
+                _cleanup_emptied([came_back], config)
     return notes
