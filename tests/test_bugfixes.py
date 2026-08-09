@@ -18,7 +18,11 @@ from sorter.util import report
 def make_config(root):
     return Config(
         downloads_path=str(root),
-        categories={"Медиа": ["клип"], "Программы": [".exe"], "Код": [".json"]},
+        # `Documents` названа категорией нарочно: в корень загрузок обход
+        # заходит только по категориям, а `managed_folders` — список плоский,
+        # категории и типы вперемешку.
+        categories={"Медиа": ["клип"], "Программы": [".exe"], "Код": [".json"],
+                    "Documents": []},
         type_map={"Videos": ["mp4"], "Installers": ["exe"], "Documents": ["pdf", "txt"]},
         managed_folders=["Others", "Медиа", "Программы", "Код",
                          "Videos", "Installers", "Documents", "Misc"],
@@ -114,6 +118,87 @@ def test_resort_still_refiles_files_in_own_folders(tmp_path):
     touch(tmp_path / "Others" / "Videos" / "клип.mp4")
     moves = build_plan(cfg, deep=True)
     assert [m.dst for m in moves] == [tmp_path / "Медиа" / "Videos" / "клип.mp4"]
+
+
+def test_foreign_folder_named_like_a_type_is_left_alone(tmp_path):
+    """«Переразложить старое» растаскивало чужие папки с именем типа.
+
+    Обход решал «своё или чужое» по одному плоскому `managed_folders`, где
+    свалены и категории, и типы. А раскладка у программы строгая —
+    `Категория/Тип/файл`, — и имя типа в КОРНЕ загрузок она не создаёт никогда.
+    Зато его сплошь и рядом носят чужие папки: `Models` у моделей Stable
+    Diffusion, `Code` у распакованного репозитория, `Documents` у чужого
+    дистрибутива.
+
+    Итог был худший из возможных: `Code/main.py` уезжал в `Код/Code/`,
+    `Code/LICENSE` — в `Others/Misc/`, а от папки, которую человек распаковал
+    целиком, оставалась пустая скорлупа. README про это говорит прямо: «Чужая
+    папка — единица, а не набор файлов; разложив её содержимое по типам,
+    программа уничтожила бы её целиком», и подсказка самой галочки обещает,
+    что чужие папки не трогаются в любом случае. Обещание не выполнялось ровно
+    там, где его дают.
+    """
+    config = Config(
+        downloads_path=str(tmp_path),
+        categories={"Код": ["main"], "Нейросети": ["safetensors"]},
+        type_map={"Code": ["py"], "Models": ["safetensors"]},
+        managed_folders=["Код", "Нейросети", "Others", "Code", "Models", "Misc"],
+        ignore=[],
+        fallback_category="Others",
+        fallback_type="Misc",
+    )
+    touch(tmp_path / "Code" / "main.py")          # распакованный репозиторий
+    touch(tmp_path / "Models" / "sd.safetensors")  # папка моделей
+    touch(tmp_path / "Код" / "Code" / "своё.py")   # а это раскладка программы
+
+    found = scan(tmp_path, config, deep=True)
+
+    assert found == [tmp_path / "Код" / "Code" / "своё.py"], (
+        f"в чужие папки заходить нельзя: {found}")
+
+
+def test_own_category_folder_is_still_walked(tmp_path):
+    """Обратная сторона: свою папку обход терять не должен.
+
+    Категория в корне — своя, и внутри неё папка с именем типа тоже своя:
+    её создала программа. Правило про корень не распространяется вглубь.
+    """
+    config = Config(
+        downloads_path=str(tmp_path),
+        categories={"Код": ["main"]},
+        type_map={"Code": ["py"]},
+        managed_folders=["Код", "Code", "Others", "Misc"],
+        ignore=[],
+        fallback_category="Others",
+        fallback_type="Misc",
+    )
+    touch(tmp_path / "Код" / "Code" / "старое.py")
+
+    assert scan(tmp_path, config, deep=True) == [
+        tmp_path / "Код" / "Code" / "старое.py"]
+
+
+def test_category_reachable_only_through_a_manual_rule_is_walked(tmp_path):
+    """Категорию создаёт и ручное правило — значит её папка тоже своя.
+
+    Иначе `overrides.json` заводил бы в корне папку, куда переразложение
+    больше не заходит: та самая чёрная дыра, только с другой стороны.
+    """
+    config = Config(
+        downloads_path=str(tmp_path),
+        categories={},
+        patterns={},
+        overrides={"смета.pdf": "Работа"},
+        type_map={"Documents": ["pdf"]},
+        managed_folders=["Работа", "Documents", "Others", "Misc"],
+        ignore=[],
+        fallback_category="Others",
+        fallback_type="Misc",
+    )
+    touch(tmp_path / "Работа" / "Documents" / "смета.pdf")
+
+    assert scan(tmp_path, config, deep=True) == [
+        tmp_path / "Работа" / "Documents" / "смета.pdf"]
 
 
 def test_scan_skips_handmade_subfolder(tmp_path):

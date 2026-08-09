@@ -7,7 +7,11 @@ from sorter.config import Config
 def make_config(root):
     return Config(
         downloads_path=str(root),
-        categories={"Учёба": ["задач", "класс"]},
+        # `3D` названа категорией нарочно: в корень загрузок обход заходит
+        # только по категориям, и в поставляемых правилах `3D` — как раз и
+        # категория, и тип. Слов ей не нужно: раскладку в этих тестах решают
+        # другие правила.
+        categories={"Учёба": ["задач", "класс"], "3D": []},
         type_map={"Documents": ["pdf", "txt"], "3D": ["obj", "3mf", "stl", "gcode"]},
         managed_folders=["Учёба", "Documents", "Others", "3D"],
         ignore=[],

@@ -5,9 +5,17 @@ from sorter.config import Config
 
 
 def make_config(root):
+    """Конфиг, в котором `Documents` и `Учёба` — именно КАТЕГОРИИ.
+
+    Сказать это приходится вслух: в корень загрузок обход заходит только по
+    категориям, а не по всему, что названо в `managed_folders`. Список там
+    плоский, категории и типы вперемешку, и по нему обход раньше растаскивал
+    чужие папки, которым имя типа досталось само собой — `Models` у моделей
+    Stable Diffusion, `Code` у распакованного репозитория.
+    """
     return Config(
         downloads_path=str(root),
-        categories={},
+        categories={"Documents": [], "Учёба": []},
         type_map={},
         managed_folders=["Documents", "Учёба", "Others"],
         ignore=["*.crdownload", "desktop.ini"],

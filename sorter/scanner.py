@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .classifier import extension_of
 from .config import (Config, extension_key, external_3d_extensions,
-                     folder_key, folder_keys)
+                     folder_key, folder_keys, root_folder_keys)
 
 
 def _is_ignored(name: str, patterns: list[str]) -> bool:
@@ -27,13 +27,23 @@ def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
 
     Своё имя опознаётся через `folder_key`: на Windows `Медиа` и `медиа` — одна
     и та же папка, и сверка строка в строку делала из второй чёрную дыру.
+
+    В корне заходим только в КАТЕГОРИИ (`root_folder_keys`), а не во всё, что
+    названо в `managed_folders`. Список там плоский — категории и типы вперемешку,
+    — а раскладка у программы строгая: `Категория/Тип/файл`. Имя типа в корне
+    загрузок программа не создаёт никогда, зато его сплошь и рядом носят чужие
+    папки: `Models` у моделей Stable Diffusion, `Code` у распакованного
+    репозитория, `Documents` у чужого дистрибутива. Пока сверка шла по общему
+    списку, «Переразложить старое» растаскивало их содержимое по категориям и
+    оставляло от папки пустую скорлупу — при том, что и README, и подсказка
+    самой галочки обещают, что чужие папки не трогаются в любом случае.
     """
     root = Path(root)
     found: list[Path] = []
     if not root.is_dir():
         return found
 
-    managed = folder_keys(config.managed_folders)
+    enterable = root_folder_keys(config)
 
     # Куда уже заходили — по настоящему пути, а не по тому, каким пришли.
     # Общий на весь обход: две управляемые папки могут оказаться стыками на
@@ -52,7 +62,7 @@ def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
         if entry.is_file():
             if not _is_ignored(entry.name, config.ignore):
                 found.append(entry)
-        elif deep and entry.is_dir() and folder_key(entry.name) in managed:
+        elif deep and entry.is_dir() and folder_key(entry.name) in enterable:
             found.extend(_walk_managed(entry, config, visited))
 
     return found
