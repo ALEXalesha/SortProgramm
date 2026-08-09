@@ -7,6 +7,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -565,3 +566,77 @@ def test_name_with_a_rejected_rule_is_not_paid_for(window, tmp_path):
 
     assert FakeWorker.seen == ["новый.mp4"]
     assert "разбор отверг" in win.status.text()
+
+
+def test_unreadable_overrides_stops_the_request_before_it_is_paid_for(
+        window, tmp_path, monkeypatch):
+    """Отказ записывать в нечитаемый файл случался уже после ответа модели.
+
+    Записывать на место нечитаемого `overrides.json` окно отказывается давно —
+    там лежат сотни решений, принятых руками, и второй копии у них нет. Но
+    отказ этот наступал в самом конце: запрос уходил, деньги списывались, а
+    потом окно говорило «правила не сохранены… запрос придётся повторить».
+    Совет неверный: пока файл не починят в редакторе, сохранить ответ не выйдет
+    ни в этот раз, ни в следующий. Проверка стояла ровно с одной стороны — на
+    записи, — а спрашивать пускали кого угодно.
+    """
+    win = window
+    (tmp_path / "overrides.json").write_text("{это не json", encoding="utf-8")
+    win.config = ui_qt.Config.load(tmp_path / "config.json")
+    assert win.config.overrides_unreadable
+    said = {}
+    monkeypatch.setattr(
+        ui_qt.QMessageBox, "warning",
+        staticmethod(lambda parent, title, text, *a, **k:
+                     said.update(title=title, text=text)))
+    FakeWorker.seen = None
+
+    win.run_ai()
+
+    assert FakeWorker.seen is None, "запрос ушёл, хотя ответ сохранить некуда"
+    assert "overrides.json" in said.get("text", "")
+
+
+def test_readable_overrides_do_not_stop_the_request(window, tmp_path):
+    """Обычный файл правил запросу не мешает."""
+    (tmp_path / "overrides.json").write_text("{}", encoding="utf-8")
+    window.config = ui_qt.Config.load(tmp_path / "config.json")
+    FakeWorker.seen = None
+
+    window.run_ai()
+
+    assert FakeWorker.seen == ["новый.mp4"]
+
+
+def test_lost_batches_are_named_apart_from_no_decision(window, monkeypatch):
+    """«Без решения» и «не дошло до модели» — разные вещи, и лечатся разным.
+
+    Окно считает оставшихся без решения вычитанием, поэтому имена из упавшей
+    пачки попадали в ту же строку, что и честное «модель не смогла». Человеку
+    это говорит «делать нечего», хотя на самом деле помогает повторный запрос.
+    """
+    win = window
+    win._ai_asked = 3
+    win._worker = SimpleNamespace(
+        problems=["пачка 2 из 2 (1 имён) не дошла до модели: сеть отвалилась"])
+    seen = {}
+    monkeypatch.setattr(
+        ui_qt.QMessageBox, "warning",
+        staticmethod(lambda parent, title, text, *a, **k:
+                     seen.update(title=title, text=text)))
+
+    win._ai_done({"новый.mp4": "Медиа"})
+
+    assert "пачек не дошло: 1" in win.status.text()
+    assert "сеть отвалилась" in seen.get("text", "")
+
+
+def test_nothing_lost_means_no_extra_words(window):
+    """Когда все пачки дошли, лишней строки в отчёте нет."""
+    win = window
+    win._ai_asked = 1
+    win._worker = SimpleNamespace(problems=[])
+
+    win._ai_done({"новый.mp4": "Медиа"})
+
+    assert "не дошло" not in win.status.text()

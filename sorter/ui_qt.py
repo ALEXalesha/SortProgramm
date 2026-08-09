@@ -30,6 +30,10 @@ class _AiWorker(QThread):
     Длинный список уходит пачками (`ai.classify_many`), поэтому по дороге
     прилетает прогресс — иначе на сотне имён окно молчит полминуты и кажется
     зависшим.
+
+    Пачки, не дошедшие до модели, складываются в `problems` и уезжают наверх
+    вместе с ответом: упавшая пачка снаружи неотличима от честного «модель не
+    смогла», а помогает от неё совсем другое — повторить запрос.
     """
     done = pyqtSignal(dict)
     failed = pyqtSignal(str)
@@ -43,6 +47,7 @@ class _AiWorker(QThread):
         self._hints = hints or {}
         self._fallback = fallback
         self._stopped = False
+        self.problems: list[str] = []
 
     def stop(self):
         """Просит бросить остаток списка. Запрос в полёте не прерывает."""
@@ -50,6 +55,7 @@ class _AiWorker(QThread):
 
     def run(self):
         try:
+            problems: list[str] = []
             result = ai.classify_many(
                 self._filenames,
                 self._categories,
@@ -58,7 +64,11 @@ class _AiWorker(QThread):
                 should_stop=lambda: self._stopped,
                 hints=self._hints,
                 fallback=self._fallback,
+                problems=problems,
             )
+            # Список заполнен до сигнала, а читают его уже в главном потоке,
+            # разобрав `done`. Гонки тут нет: после `emit` поток ничего не пишет.
+            self.problems = problems
             self.done.emit(result)
         except Exception as exc:  # сеть, ключ, разбор — наружу как текст
             self.failed.emit(str(exc))
@@ -650,11 +660,31 @@ class GlassWindow(QWidget):
         `is_dir()` на ней отвечает True. Без этой проверки ИИ разбирал папку
         самой программы — её имена уходили в DeepSeek, ответы записывались
         правилами.
+
+        Нечитаемый `overrides.json` отбивается здесь же, до запроса. Записывать
+        на его место `_save_overrides` отказывается давно — там лежат сотни
+        решений, принятых руками, и второй копии у них нет, — но отказ этот
+        случался уже после ответа модели: запрос уходил, деньги списывались, а
+        в конце окно говорило «правила не сохранены... запрос придётся
+        повторить». Повторять его бесполезно: пока файл не починят в редакторе,
+        сохранить ответ не выйдет ни в этот раз, ни в следующий. Проверка стояла
+        ровно с одной стороны — на записи, — а спрашивать пускали кого угодно.
         """
         self._sync_config()
         root = Path(self.config.downloads_path)
         if not self.config.downloads_path or not root.is_dir():
             QMessageBox.information(self, "Папка не найдена", "Укажи существующую папку.")
+            return
+        if self.config.overrides_unreadable:
+            QMessageBox.warning(
+                self, "Правила не читаются",
+                f"{OVERRIDES_FILENAME} лежит рядом с программой, но разобрать "
+                "его не вышло — об этом сказано при запуске.\n\n"
+                "Пока он не починен, ответ модели сохранить некуда: запись на "
+                "его место стёрла бы все правила, которые в нём лежат. "
+                "Спрашивать поэтому не будем — деньги ушли бы впустую.\n\n"
+                "Поправь файл в редакторе (или удали, если он не нужен) и "
+                "перезапусти программу.")
             return
         key = ai.load_api_key(self.config_path.parent)
         if not key:
@@ -759,13 +789,28 @@ class GlassWindow(QWidget):
         # остались неразобранными.
         asked = getattr(self, "_ai_asked", len(mapping))
         undecided = max(0, asked - len(rules))
+        # Пачки, не дошедшие до модели. Без этой строки они попадали в «без
+        # решения» — фразу, которая значит «модель посмотрела и не смогла», —
+        # и человек, у которого просто оборвалась сеть, узнавал ровно
+        # обратное тому, что случилось: повторять запрос ему было незачем.
+        lost = getattr(getattr(self, "_worker", None), "problems", []) or []
         notes = []
         if undecided:
             notes.append(f"без решения: {undecided}")
+        if lost:
+            notes.append(f"пачек не дошло: {len(lost)}")
         if kept:
             notes.append(f"свои правила сохранены: {len(kept)}")
         tail = f" ({'; '.join(notes)})" if notes else ""
         self.status.setText(f"ИИ разложил {len(fresh)} шт.{tail}")
+        if lost and not failure:
+            QMessageBox.warning(
+                self, "Не все имена дошли до модели",
+                "Часть списка до DeepSeek не доехала — эти имена остались без "
+                "решения не потому, что модель не смогла:\n\n"
+                + "\n".join(f"• {why}" for why in lost)
+                + "\n\nПовтори запрос: имена, у которых правило уже появилось, "
+                  "второй раз не спрашиваются.")
         if failure:
             self.status.setText(
                 f"ИИ разложил {len(fresh)} шт.{tail}, но правила не сохранены.")

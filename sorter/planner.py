@@ -56,15 +56,42 @@ def _read_content(path: Path) -> str:
     return decode_text(raw)[:CONTENT_PREVIEW_CHARS]
 
 
-def _dedup(dst: Path, taken: set[Path]) -> Path:
-    """Свободное имя: при занятом добавляет ` (1)`, ` (2)`…"""
-    if dst not in taken and not dst.exists():
+def _dedup(dst: Path, taken: set[Path], vacating: set[Path] | None = None) -> Path:
+    """Свободное имя: при занятом добавляет ` (1)`, ` (2)`…
+
+    `vacating` — файлы, которые этот же план уносит с их мест. Занятым такой
+    путь не считается: к тому времени, когда до него дойдёт очередь, там будет
+    пусто.
+
+    Без этого номер приписывался за столкновение, которое план сам же и
+    разрешает. Расклад самый обычный: правила поправили, `заметка.txt` из
+    `Медиа/Documents` уезжает в `Учёбу`, а в корне лежит новая `заметка.txt`,
+    которой место как раз в `Медиа/Documents`. Занятость проверялась по
+    состоянию на момент построения плана — то есть по файлу, который в этом же
+    плане стоит строкой ниже с пометкой «уезжает», — и новая заметка
+    получала имя `заметка (1).txt`. Навсегда: `base_name` служебный номер при
+    разборе снимает, так что следующая уборка файл не трогает, а
+    `заметка.txt` рядом остаётся свободной. Отчёт при этом честный и оговорки
+    не ставит — план обещал `заметка (1).txt`, файл так и лёг, — а человек
+    получает переименованный файл там, где ничего не сталкивалось.
+
+    Уступать дорогу по-настоящему приходится уже при выполнении: занятый путь
+    надо освободить раньше, чем в него класть (`mover._vacate_first`). Здесь мы
+    только перестаём резервировать номер; если освободить не выйдет,
+    `apply` подберёт свободное имя сам и скажет об этом оговоркой.
+    """
+    vacating = vacating or set()
+
+    def free(path: Path) -> bool:
+        return path not in taken and (not path.exists() or path in vacating)
+
+    if free(dst):
         return dst
     stem, suffix = dst.stem, dst.suffix
     i = 1
     while True:
         candidate = dst.with_name(f"{stem} ({i}){suffix}")
-        if candidate not in taken and not candidate.exists():
+        if free(candidate):
             return candidate
         i += 1
 
@@ -144,14 +171,20 @@ def plan(
 
     taken — общий набор уже занятых назначений; передаётся, когда план строится
     по нескольким источникам (загрузки + All_3d), чтобы имена не сталкивались.
+
+    Считается план в два прохода. Сначала каждому файлу выбирается место, потом
+    разрешаются столкновения имён — и только на втором проходе известно, кто из
+    файлов со своего места уходит. Занятый уходящим путь столкновением не
+    считается (`_dedup`), иначе номер ` (1)` приписывается за конфликт, который
+    этот же план и разрешает.
     """
     root = Path(config.downloads_path)
     external_path = external_3d_path(config)
 
-    moves: list[Move] = []
     if taken is None:
         taken = set()
 
+    chosen: list[tuple[Path, Path, str]] = []
     for src in files:
         content = _read_content(src)
         category, reason = explain_category(src.name, content, config)
@@ -171,7 +204,14 @@ def plan(
         if src == dst:
             continue  # уже на месте
 
-        dst = _dedup(dst, taken)
+        chosen.append((src, dst, reason))
+
+    # Файл, оставшийся на месте, сюда не попал — его путь занят по-настоящему.
+    vacating = {src for src, _, _ in chosen}
+
+    moves: list[Move] = []
+    for src, dst, reason in chosen:
+        dst = _dedup(dst, taken, vacating)
         taken.add(dst)
         moves.append(Move(src, dst, note=reason))
 
@@ -196,10 +236,13 @@ def plan_3d_folder(
     if external_path is None:
         return []
 
-    moves: list[Move] = []
     if taken is None:
         taken = set()
 
+    # Два прохода и тот же расчёт, что у `plan`: пока не выбраны все места,
+    # неизвестно, кто со своего уходит, а занятый уходящим путь столкновением
+    # не считается.
+    chosen: list[tuple[Path, Path]] = []
     for src in files:
         extension = extension_of(src.name)
         if not extension:
@@ -207,7 +250,13 @@ def plan_3d_folder(
         dst = external_path / extension / src.name
         if src == dst:
             continue  # уже в своей подпапке
-        dst = _dedup(dst, taken)
+        chosen.append((src, dst))
+
+    vacating = {src for src, _ in chosen}
+
+    moves: list[Move] = []
+    for src, dst in chosen:
+        dst = _dedup(dst, taken, vacating)
         taken.add(dst)
         moves.append(Move(src, dst, note=BY_EXTENSION))
 

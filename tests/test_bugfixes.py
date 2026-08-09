@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from sorter.ai import load_api_key, parse_ai_response, useful_rules
+from sorter.ai import (classify_many, load_api_key, parse_ai_response,
+                       useful_rules)
 from sorter.config import Config, usable_3d_path
 from sorter.classifier import explain_category, match_category, match_type
 from sorter.history import list_operations, undo_operation
@@ -3374,3 +3375,191 @@ def test_config_without_stale_rules_stays_quiet(tmp_path):
     problems = Config.load(tmp_path / "config.json").problems
 
     assert [p for p in problems if "больше не действуют" in p] == []
+
+
+def make_rules(tmp_path, extra=None):
+    """Правила и настройки во временной папке. Возвращает путь к config.json."""
+    rules = {
+        "categories": {"Учёба": ["лекция"], "Медиа": ["клип"]},
+        "type_map": {"Documents": ["txt"]},
+        "managed_folders": ["Учёба", "Медиа", "Documents", "Others", "Misc"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    }
+    rules.update(extra or {})
+    (tmp_path / "rules.json").write_text(
+        json.dumps(rules, ensure_ascii=False), encoding="utf-8")
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir(exist_ok=True)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"downloads_path": str(downloads)}, ensure_ascii=False),
+        encoding="utf-8")
+    return config_path, downloads
+
+
+def test_target_freed_by_the_same_plan_is_not_a_conflict(tmp_path):
+    """Номер « (1)» приписывался за столкновение, которое план сам разрешает.
+
+    Расклад самый обычный: правила поправили, и `заметка.txt` из
+    `Медиа/Documents` уезжает в `Учёбу`, а в корне лежит новая `заметка.txt`,
+    которой место как раз в `Медиа/Documents`. Занятость проверялась по
+    состоянию на момент построения плана — то есть по файлу, который в этом же
+    плане стоит строкой ниже с пометкой «уезжает».
+
+    Оставалось это навсегда: разбор служебный номер снимает (`base_name`), так
+    что следующая уборка файл не трогает, а `заметка.txt` рядом стоит
+    свободная. Отчёт при этом честный и оговорок не ставит — план обещал
+    `заметка (1).txt`, файл так и лёг.
+    """
+    config_path, downloads = make_rules(tmp_path)
+    (downloads / "Медиа" / "Documents").mkdir(parents=True)
+    (downloads / "заметка.txt").write_text("клип", encoding="utf-8")
+    (downloads / "Медиа" / "Documents" / "заметка.txt").write_text(
+        "лекция", encoding="utf-8")
+
+    config = Config.load(config_path)
+    moves = build_plan(config, deep=True)
+    # Ключ — полный путь: имя у обоих файлов одно и то же, и по имени они
+    # сложились бы в одну запись, от которой тест ничего не проверяет.
+    targets = {mv.src: mv.dst for mv in moves}
+
+    assert targets[downloads / "заметка.txt"] == (
+        downloads / "Медиа" / "Documents" / "заметка.txt"), (
+        f"номер приписан зря: {[str(m.dst) for m in moves]}")
+    assert targets[downloads / "Медиа" / "Documents" / "заметка.txt"] == (
+        downloads / "Учёба" / "Documents" / "заметка.txt")
+
+
+def test_apply_lets_the_target_holder_out_first(tmp_path):
+    """Уступить дорогу надо и самой цели, не только папке над ней.
+
+    Половины починки тут не хватает ни одной: имя выбирает план
+    (`planner._dedup`), а освобождает дорогу выполнение
+    (`mover._vacate_first`). Пока обход спрашивал только про папки над целью,
+    порядок решал алфавит — успел тёзка уехать первым, всё сошлось; не
+    успел — `apply` находил путь занятым и клал файл рядом под номером.
+    """
+    config_path, downloads = make_rules(tmp_path)
+    (downloads / "Медиа" / "Documents").mkdir(parents=True)
+    (downloads / "заметка.txt").write_text("клип", encoding="utf-8")
+    (downloads / "Медиа" / "Documents" / "заметка.txt").write_text(
+        "лекция", encoding="utf-8")
+
+    config = Config.load(config_path)
+    result = apply(build_plan(config, deep=True), config, dry_run=False)
+
+    assert result.errors == []
+    assert result.notes == [], "оговорок быть не должно: путь освободился"
+    assert (downloads / "Медиа" / "Documents" / "заметка.txt").exists()
+    assert (downloads / "Учёба" / "Documents" / "заметка.txt").exists()
+    numbered = [p.name for p in downloads.rglob("*(1)*")]
+    assert numbered == [], f"файлы переименованы зря: {numbered}"
+
+
+def test_file_staying_put_still_holds_its_path(tmp_path):
+    """Уступает дорогу только тот, кто уезжает.
+
+    Файл, оставшийся на месте (`src == dst`), из плана выпадает — и путь свой
+    держит по-настоящему. Считать его уходящим значило бы поменять лишний
+    номер на затёртый файл, то есть починку на поломку куда худшую.
+    """
+    config_path, downloads = make_rules(tmp_path)
+    (downloads / "Медиа" / "Documents").mkdir(parents=True)
+    # Этот остаётся на месте: его категория и тип уже совпадают с папкой.
+    (downloads / "Медиа" / "Documents" / "заметка.txt").write_text(
+        "клип", encoding="utf-8")
+    # А этот метит туда же.
+    (downloads / "заметка.txt").write_text("клип", encoding="utf-8")
+
+    config = Config.load(config_path)
+    result = apply(build_plan(config, deep=True), config, dry_run=False)
+
+    assert result.errors == []
+    assert (downloads / "Медиа" / "Documents" / "заметка.txt").read_text(
+        encoding="utf-8") == "клип"
+    assert (downloads / "Медиа" / "Documents" / "заметка (1).txt").exists(), (
+        "занятый путь остался занятым — номер тут нужен")
+
+
+def test_empty_type_map_is_reported(tmp_path):
+    """Пустая карта типов роняет второй этаж раскладки молча.
+
+    Раскладка у программы двухэтажная — `Категория/Тип/файл`, — и без
+    `type_map` тип всем выдаётся запасной: все загрузки ложатся в
+    `Категория/Misc`. Снаружи это выглядит исправной работой: план построен,
+    категории выбраны верно, жалоб нет. Испорченный раздел разбор называет
+    своими словами, а про отсутствующий и пустой не говорил ничего — тот самый
+    третий вход валидатора, про который забывают.
+    """
+    config_path, _ = make_rules(tmp_path, {"type_map": {}})
+
+    problems = Config.load(config_path).problems
+
+    said = [p for p in problems if "type_map" in p]
+    assert said, f"о пустой карте типов не сказано: {problems}"
+    assert "Misc" in said[0], "надо назвать, куда всё ляжет"
+
+
+def test_missing_type_map_is_reported(tmp_path):
+    """Раздела нет вовсе — то же самое и той же ценой."""
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "managed_folders": ["Медиа", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "config.json").write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+
+    problems = Config.load(tmp_path / "config.json").problems
+
+    assert [p for p in problems if "type_map" in p]
+
+
+def test_healthy_type_map_stays_quiet(tmp_path):
+    """С картой типов разбор про неё молчит."""
+    config_path, _ = make_rules(tmp_path)
+
+    problems = Config.load(config_path).problems
+
+    assert [p for p in problems if "type_map" in p] == []
+
+
+def test_failed_batch_is_named_and_not_counted_as_no_decision(tmp_path):
+    """Упавшая пачка выглядела как «модель посмотрела и не смогла».
+
+    Окно считает оставшихся без решения вычитанием — сколько спросили минус
+    сколько правил вышло — и печатает «без решения: 40». На деле модель этих
+    сорока имён не видела вовсе: оборвалась сеть, истёк таймаут, ключ упёрся в
+    предел запросов. Разница вся: в первом случае делать нечего, во втором
+    помогает повторный запрос, а понять, какой из двух случаев перед тобой,
+    было неоткуда.
+    """
+    names = [f"файл{i}.bin" for i in range(90)]  # три пачки: 40, 40, 10
+    calls = {"n": 0}
+
+    def flaky(batch, categories, api_key, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("сеть отвалилась")
+        return {name: "Медиа" for name in batch}
+
+    problems = []
+    result = classify_many(
+        names, ["Медиа", "Others"], "sk-test",
+        classifier=flaky, problems=problems)
+
+    assert len(result) == 50, "уцелевшие пачки должны доехать"
+    assert len(problems) == 1, f"о поломке не сказано: {problems}"
+    assert "сеть отвалилась" in problems[0]
+    assert "40" in problems[0], "надо назвать, сколько имён потеряно"
+
+
+def test_all_batches_through_says_nothing(tmp_path):
+    """Когда всё дошло, жаловаться не на что."""
+    problems = []
+    classify_many(
+        ["a.bin", "b.bin"], ["Медиа"], "sk-test",
+        classifier=lambda batch, *a, **k: {n: "Медиа" for n in batch},
+        problems=problems)
+
+    assert problems == []
