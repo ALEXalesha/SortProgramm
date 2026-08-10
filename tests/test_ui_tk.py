@@ -57,3 +57,83 @@ def test_tk_window_keeps_the_3d_path_it_did_not_touch(tmp_path):
 
     saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
     assert saved["external_3d"]["path"] == "X:/all3d"
+
+
+def test_tk_window_names_the_folder_it_could_not_read(tmp_path, monkeypatch):
+    """«Не прочитано папок: 1» без имени — жалоба, по которой нечего чинить.
+
+    Про папку, которая на месте, а прочитать её не выходит, README обещает
+    рассказать во всех трёх интерфейсах: «План готов: 0 шт.» на такой папке —
+    тот самый нечестный ноль. Консоль печатает путь строкой, окно PyQt кладёт
+    его в подсказку мышью, а это окно называло одно число.
+
+    Числа мало ровно потому, зачем жалоба и заведена: причины у неё временные и
+    чинятся руками — воткнуть флешку, подключить сетевой диск, закрыть
+    программу, держащую каталог, — но чинить надо КОНКРЕТНУЮ папку, а какую
+    именно, окно не говорило. Загрузки у человека не из трёх папок, и обойти их
+    в проводнике, гадая, какая не открылась, — работа на полдня.
+    """
+    app = make_window(tmp_path, to_3d=False)
+    downloads = Path(app.config.downloads_path)
+    (downloads / "Медиа" / "Videos").mkdir(parents=True)
+    (downloads / "Медиа" / "Videos" / "клип.mp4").write_text("x", encoding="utf-8")
+
+    real = Path.iterdir
+    denied = (downloads / "Медиа" / "Videos").resolve()
+
+    def guard(self):
+        if self.resolve() == denied:
+            raise PermissionError(13, "Отказано в доступе")
+        return real(self)
+
+    monkeypatch.setattr(Path, "iterdir", guard)
+
+    app.tree = _FakeTree()
+    app.status = _FakeVar()
+    app.resort = _FakeVar(True)
+    app.moves = []
+    app.unread_tip = _FakeTip()
+
+    app.preview()
+
+    assert "Не прочитано папок: 1" in app.status.get()
+    assert "Videos" in app.unread_tip.text, (
+        "окно сказало, что папку не прочитало, но не сказало какую: "
+        f"{app.unread_tip.text!r}")
+
+
+class _FakeVar:
+    """`tk.StringVar`/`BooleanVar` без экрана."""
+
+    def __init__(self, value=""):
+        self._value = value
+
+    def get(self):
+        return self._value
+
+    def set(self, value):
+        self._value = value
+
+
+class _FakeTree:
+    """`ttk.Treeview` без экрана: помнит только вставленные строки."""
+
+    def __init__(self):
+        self.rows = []
+
+    def get_children(self):
+        return list(range(len(self.rows)))
+
+    def delete(self, *_items):
+        self.rows = []
+
+    def insert(self, _parent, _where, values):
+        self.rows.append(values)
+
+
+class _FakeTip:
+    def __init__(self):
+        self.text = ""
+
+    def set(self, text):
+        self.text = text

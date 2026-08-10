@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import main as main_module
 from sorter.ai import (classify_many, load_api_key, parse_ai_response,
                        useful_rules)
 from sorter.config import Config, usable_3d_path
@@ -37,6 +38,20 @@ def touch(path, text="x"):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def write_cli_config(tmp_path, settings, rules=None):
+    """Пара файлов настроек рядом, как их видит запуск из консоли."""
+    (tmp_path / "rules.json").write_text(json.dumps(rules or {
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "config.json").write_text(
+        json.dumps(settings, ensure_ascii=False), encoding="utf-8")
+    return tmp_path / "config.json"
 
 
 # --- откат при занятом исходном пути ---
@@ -3968,3 +3983,85 @@ def test_unreadable_extension_folder_in_3d_is_not_silent(tmp_path, monkeypatch):
 
     assert problems, "о нечитаемой папке расширений промолчали"
     assert any(str(all_3d / "gcode") in p for p in problems), problems
+
+
+def test_console_does_not_blame_a_setting_it_overrode_itself(tmp_path, monkeypatch, capsys):
+    """`--path` перебивает папку из настроек — значит и жаловаться на неё нечего.
+
+    `config.json` без `downloads_path` — обычный файл нового пользователя, и
+    разбор о нём честно говорит: «папка загрузок не указана, взята папка по
+    умолчанию». Но когда папку назвали флагом, эта жалоба становится неправдой
+    дважды. Настройка ни на что не влияет — её только что перебили, — а строка
+    вдобавок называет `~/Downloads` папкой, которую взяли, при том что двумя
+    строками ниже стоит «Папка: <совсем другая>». Человек читает предупреждение
+    о том, что программа сейчас разложит не ту папку, и идёт проверять, хотя
+    разложит она ровно ту, которую он назвал.
+
+    Отчёт, спорящий сам с собой, эта программа считает ошибкой (`util.report`
+    чинили ровно за это), и здесь он спорит с собственной соседней строкой.
+    """
+    cfg_path = write_cli_config(tmp_path, {"external_3d": {}})
+    monkeypatch.setattr(main_module, "CONFIG_PATH", cfg_path)
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "клип.mp4")
+
+    main_module.run_cli(str(downloads), do_apply=False, to_3d=False, deep=False)
+
+    out = capsys.readouterr().out
+    assert "папка загрузок не указана" not in out, (
+        "консоль ругается на настройку, которую сама же перебила флагом:\n" + out)
+    assert str(downloads) in out
+
+
+def test_console_still_blames_the_missing_setting_without_the_flag(tmp_path, monkeypatch, capsys):
+    """Без `--path` та же жалоба обязана остаться: папку и правда взяли не ту."""
+    cfg_path = write_cli_config(tmp_path, {"external_3d": {}})
+    monkeypatch.setattr(main_module, "CONFIG_PATH", cfg_path)
+
+    main_module.run_cli(None, do_apply=False, to_3d=False, deep=False)
+
+    out = capsys.readouterr().out
+    assert "папка загрузок не указана" in out, out
+
+
+def test_broken_3d_path_does_not_take_the_program_down(tmp_path):
+    """«Испорченные настройки не роняют программу» — обещание README.
+
+    Управляющий символ в пути к All_3d приходит обычным путём: склеенная
+    программой строка, съехавшая замена в редакторе, перенос настроек с другой
+    машины. Разбор его пропускал молча — `Path` такой путь считает абсолютным,
+    `usable_3d_path` отвечает «годится», предупреждения нет ни одного, — и
+    ронял программу уже на перемещении: `mkdir` бросает `ValueError`, а `apply`
+    ловит только `OSError`.
+
+    Хуже всех при этом окну PyQt: необработанное исключение в слоте гасит
+    процесс целиком, без окна и без строчки в отчёте. Файлы к тому времени
+    частью переехали, частью нет, а человек видит закрывшуюся программу.
+    """
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "деталь.stl")
+    config = make_config(downloads)
+    config.categories["3D"] = [".stl"]
+    config.type_map["3D"] = ["stl"]
+    config.managed_folders.append("3D")
+    config.external_3d = {"enabled": True, "path": "C:/All\x003d",
+                          "extensions": ["stl"]}
+
+    moves = build_plan(config, send_3d_external=True, deep=False)
+    result = apply(moves, config, dry_run=False)   # раньше — ValueError наружу
+
+    assert result.moved + len(result.errors) == len(moves)
+    assert not any("\x00" in str(mv.dst) for mv in moves), (
+        "план ведёт файл по пути, которого файловая система не примет")
+
+
+def test_broken_3d_path_says_why_it_did_nothing(tmp_path):
+    """И молчать о таком пути нельзя: настройка включена и не работает."""
+    config = make_config(tmp_path)
+    config.external_3d = {"enabled": True, "path": "C:/All\x003d",
+                          "extensions": ["stl"]}
+
+    warning = external_3d_warning(config, send_3d_external=True)
+
+    assert warning, "путь негодный, а вынос 3D молчит"
+    assert "обычные категории" in warning

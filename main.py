@@ -9,7 +9,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from sorter.config import Config, path_3d_reason
+from sorter.config import Config, NO_DOWNLOADS_PROBLEM, path_3d_reason
 from sorter.planner import build_plan, external_3d_warning
 from sorter.mover import apply
 from sorter.util import rel_to, report
@@ -30,6 +30,20 @@ def run_cli(path: str | None, do_apply: bool, to_3d: bool | None, deep: bool) ->
     # нечем, а на Windows он превращает работу в тихое «к перемещению: 0».
     if path and path.strip():
         config.downloads_path = path.strip()
+        # Папку назвали флагом — значит жалоба на ненастроенную папку в
+        # config.json больше ни о чём. Хуже того, она врёт дважды: настройку
+        # только что перебили, а строка вдобавок называет `~/Downloads` папкой,
+        # которую взяли, при том что следующей же строкой печатается «Папка:
+        # <совсем другая>». Человек читает предупреждение о том, что программа
+        # сейчас разложит не то, и идёт проверять — а разложит она ровно ту
+        # папку, которую он назвал. Отчёт, спорящий с собственной соседней
+        # строкой, эта программа считает ошибкой.
+        #
+        # Снимаем только эту жалобу. Всё остальное — нечитаемый config.json,
+        # пропавшие правила, негодный путь к All_3d — от флага не меняется и
+        # печатается как печаталось.
+        config.problems = [p for p in config.problems
+                           if not p.startswith(NO_DOWNLOADS_PROBLEM)]
 
     # Окно про испорченные настройки предупреждает окном, а CLI молчал — и
     # раскладка «всё в Others» из-за нечитаемого rules.json выглядела как

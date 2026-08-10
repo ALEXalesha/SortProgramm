@@ -41,6 +41,7 @@ from sorter import history
 from sorter.config import Config
 from sorter.mover import apply
 from sorter.planner import build_plan
+from sorter.util import rel_to
 
 SEEDS = int(os.environ.get("SORTER_PROP_SEEDS", "20"))
 OFFSET = int(os.environ.get("SORTER_PROP_OFFSET", "0"))
@@ -620,3 +621,194 @@ def test_undo_bookkeeping_survives_a_folder_stirred_by_hand(seed, tmp_path):
             name = why.split("вернули как «", 1)[1].rstrip("»")
             assert (Path(what).parent / name).exists(), (
                 f"оговорка называет имя, которого на диске нет: {name}")
+
+
+# --- окно Tkinter целиком ------------------------------------------------------
+
+
+def _tk_app(config_path, rng):
+    """Настоящее окно Tkinter без `mainloop`. None — экрана нет.
+
+    Виджеты поднимаются по-настоящему нарочно. `ui.py` — единственный модуль
+    без своих тестов (13% по трассировщику), и проверять в нём заглушки значит
+    проверять заглушки: половина кода окна живёт в том, что показано в таблице
+    и в строке состояния, а не в том, что вернуло ядро.
+    """
+    import tkinter as tk
+    from sorter import ui
+
+    class Box:
+        """Модальные окна в пробнике: помним, что сказали, и идём дальше."""
+        said: list = []
+
+        @classmethod
+        def showinfo(cls, title, text): cls.said.append((title, text))
+
+        @classmethod
+        def showwarning(cls, title, text): cls.said.append((title, text))
+
+        @classmethod
+        def showerror(cls, title, text): cls.said.append((title, text))
+
+        @staticmethod
+        def askyesno(title, text): return True
+
+    Box.said = []
+    root = _tk_root()
+    if root is None:
+        return None, None, None
+    ui.messagebox = Box
+    frame = tk.Toplevel(root)
+    return ui.SorterApp(frame, config_path), Box, frame
+
+
+_TK_ROOT: list = []
+
+
+def _tk_root():
+    """Один корень Tk на весь набор. None — экрана нет.
+
+    Своё `tk.Tk()` на каждый прогон Tcl держит плохо: на два десятка подряд
+    один-другой падает с `TclError`, и пробник молча превращается в пропуск —
+    то есть в зелёный тест, который ничего не проверил.
+    """
+    import tkinter as tk
+    if not _TK_ROOT:
+        try:
+            root = tk.Tk()
+        except tk.TclError:
+            _TK_ROOT.append(None)
+        else:
+            root.withdraw()
+            _TK_ROOT.append(root)
+    return _TK_ROOT[0]
+
+
+def _write_rules(case: Path, root: Path, all3d: Path | None) -> Path:
+    (case / "rules.json").write_text(json.dumps({
+        "categories": {k: list(v) for k, v in CATEGORIES.items()},
+        "type_map": {k: list(v) for k, v in TYPE_MAP.items()},
+        "managed_folders": list(MANAGED),
+        "ignore": ["*.tmp"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    }, ensure_ascii=False), encoding="utf-8")
+    (case / "config.json").write_text(json.dumps({
+        "downloads_path": str(root),
+        "external_3d": {"enabled": bool(all3d), "extensions": ["stl", "gcode"],
+                        "path": str(all3d) if all3d else ""},
+    }, ensure_ascii=False), encoding="utf-8")
+    return case / "config.json"
+
+
+@pytest.mark.parametrize("seed", seeds(5))
+def test_the_tk_window_shows_and_does_what_the_core_would(seed, tmp_path):
+    """Окно Tkinter на случайной папке: показано одно — сделано то же.
+
+    До сих пор этот интерфейс проверялся одним методом сохранения настроек, и
+    расхождение с ядром искать было нечем. А расходиться ему есть где: таблицу,
+    строку состояния и порядок «применить → пересобрать план → отчитаться» окно
+    складывает само.
+
+    Папку нарочно портим между «Очистить» и «Применить» — без этого половина
+    `mover` (столкновения, неудачи, отчёт о них) не выполняется вовсе, и
+    пробник смотрит на прогон, где всё и так хорошо.
+    """
+    rng = random.Random(seed)
+    root = tmp_path / "загрузки"
+    all3d = tmp_path / "All_3d" if rng.random() < 0.5 else None
+    build_layout(rng, root, all3d)
+    assert str(tmp_path) in str(root)          # песочница, а не чужие загрузки
+    config_path = _write_rules(tmp_path, root, all3d)
+
+    app, box, frame = _tk_app(config_path, rng)
+    if app is None:
+        pytest.skip("экрана нет — окно не поднять")
+    try:
+        app.resort.set(rng.random() < 0.5)
+        app.to_3d.set(bool(all3d) and rng.random() < 0.8)
+        app.preview()
+
+        rows = [app.tree.item(i, "values") for i in app.tree.get_children()]
+        assert len(rows) == len(app.moves), "в таблице не столько строк, сколько в плане"
+        for (shown, _dst), mv in zip(rows, app.moves):
+            assert shown == rel_to(mv.src, root), (
+                f"таблица называет источник «{shown}», а план ведёт {mv.src}")
+        assert f"План готов: {len(app.moves)}" in app.status.get()
+
+        spoiled = rng.random() < 0.75
+        if spoiled:
+            spoil_before_apply(rng, app.moves)
+        was = bodies(root, all3d)
+
+        app.move_enabled.set(True)
+        app.do_apply()
+
+        assert not set(was) - set(bodies(root, all3d)), "применение потеряло содержимое"
+        status = app.status.get()
+        assert status.startswith("Перемещено:"), (
+            f"после применения окно пишет не про итог: {status!r}")
+        moved = int(status.split("Перемещено:")[1].split(",")[0])
+        errors = int(status.split("ошибок:")[1])
+        assert box.said, "файлы тронули, а отчёта не показали"
+        if moved:
+            assert history.list_operations(root), (
+                f"переместили {moved}, а откатить нечем: истории нет")
+
+        # Прибранная папка второй уборки не требует. Спрашиваем это только с
+        # непорченого прогона: порча САМА рождает файлы («чужак» в цели,
+        # «пробка» на месте папки), и разложить их вторым проходом —
+        # правильная работа. Упавшее перемещение честно оставляет файл на месте.
+        app.preview()
+        if not spoiled and not errors:
+            assert not app.moves, (
+                "повторный план после успешной уборки не пуст: "
+                f"{[str(m.src) for m in app.moves[:3]]}")
+    finally:
+        frame.destroy()
+
+
+# --- испорченные настройки не роняют программу ---------------------------------
+
+
+def test_a_broken_3d_path_never_takes_the_program_down(tmp_path):
+    """Путь к All_3d правят руками — значит там бывает что угодно.
+
+    Ждём от каждой строки одного из двух: работы или внятной жалобы. Падения не
+    ждём ни от одной, и проверяется здесь весь путь целиком — разбор, план,
+    применение, откат, — потому что упало оно в самом конце: `mkdir` бросал
+    `ValueError`, а `apply` ловит `OSError`.
+
+    Не-OSError тут дороже обычной ошибки: в окне PyQt необработанное исключение
+    в слоте гасит процесс целиком, без окна и без строчки в отчёте, а файлы к
+    тому времени частью уже переехали.
+    """
+    nasty = [
+        str(tmp_path / "All\x003d"),     # склеенная программой строка
+        str(tmp_path / "All\x01_3d"),    # управляющий символ
+        str(tmp_path / "All_3d\n2"),
+        str(tmp_path / "All_3d?"),       # запрещённый символ
+        str(tmp_path / "All_3d*"),
+        str(tmp_path / "All_3d "),       # хвостовой пробел
+        str(tmp_path / ("д" * 250)),     # длиннее предела Windows
+        "All_3d", "C:", "", " ",         # неполные пути
+    ]
+    for i, raw in enumerate(nasty):
+        case = tmp_path / f"c{i}"
+        root = case / "загрузки"
+        root.mkdir(parents=True)
+        (root / "деталь.stl").write_text("тело", encoding="utf-8")
+        (root / "клип.mp4").write_text("тело2", encoding="utf-8")
+        config = make_config(root, None)
+        config.external_3d = {"enabled": True, "path": raw,
+                              "extensions": ["stl", "gcode"]}
+
+        moves = build_plan(config, send_3d_external=True, deep=False)
+        result = apply(moves, config, dry_run=False)
+        for op in history.list_operations(root):
+            history.undo_operation(op, config)
+
+        assert result.moved + len(result.errors) == len(moves), (
+            f"отчёт не сходится с планом на пути {raw!r}")
+        assert not any("\x00" in str(mv.dst) for mv in moves), (
+            f"план ведёт файл по пути, которого файловая система не примет: {raw!r}")

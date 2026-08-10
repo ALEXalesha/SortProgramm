@@ -14,6 +14,47 @@ from .mover import apply
 from .util import rel_to as _rel_to, report
 
 
+class _Tip:
+    """Подсказка мышью: длинный список под короткой строкой состояния.
+
+    Окно PyQt кладёт имена непрочитанных папок в `setToolTip`, консоль печатает
+    их строками. Здесь такого готового средства нет, а надобность та же:
+    строка состояния короткая, в неё влезает только счёт, а чинить идут к
+    конкретной папке — и знать надо, к какой именно.
+
+    Всплывающее окно без рамки, живёт, пока курсор над виджетом. Пустой текст
+    означает «показывать нечего»: подсказка не появится вовсе.
+    """
+
+    def __init__(self, widget):
+        self.widget = widget
+        self.text = ""
+        self.window = None
+        widget.bind("<Enter>", self._show)
+        widget.bind("<Leave>", self._hide)
+
+    def set(self, text: str) -> None:
+        self.text = text
+        if not text:
+            self._hide()
+
+    def _show(self, _event=None):
+        if not self.text or self.window is not None:
+            return
+        x = self.widget.winfo_rootx() + 12
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self.window = tk.Toplevel(self.widget)
+        self.window.wm_overrideredirect(True)
+        self.window.wm_geometry(f"+{x}+{y}")
+        tk.Label(self.window, text=self.text, justify="left", background="#ffffe0",
+                 relief="solid", borderwidth=1, wraplength=560).pack()
+
+    def _hide(self, _event=None):
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
+
+
 class SorterApp:
     def __init__(self, root: tk.Tk, config_path: Path):
         self.config_path = config_path
@@ -98,7 +139,12 @@ class SorterApp:
         self.apply_btn.pack(side="right")
 
         self.status = tk.StringVar(value="Нажми «Очистить», чтобы построить план.")
-        ttk.Label(root, textvariable=self.status, padding=(12, 0, 12, 10), foreground="#333").pack(fill="x")
+        status_label = ttk.Label(root, textvariable=self.status,
+                                 padding=(12, 0, 12, 10), foreground="#333")
+        status_label.pack(fill="x")
+        # Имена непрочитанных папок — сюда: в строку влезает только счёт, а
+        # чинить надо конкретную папку (см. `preview`).
+        self.unread_tip = _Tip(status_label)
 
     # --- действия ---
 
@@ -148,6 +194,8 @@ class SorterApp:
         if not Path(self.config.downloads_path).is_dir():
             self.tree.delete(*self.tree.get_children())
             self.moves = []
+            # Список от прошлого плана здесь уже неправда: папки той нет.
+            self.unread_tip.set("")
             self.status.set(
                 f"Папка не найдена: {self.config.downloads_path}")
             return
@@ -180,6 +228,14 @@ class SorterApp:
         if unread:
             tail += (f"   Не прочитано папок: {len(unread)} — их файлы в план "
                      "не попали.")
+        # В строку — счёт, в подсказку мышью — сами имена. Одного числа мало
+        # ровно потому, зачем жалоба и заведена: причины у неё временные и
+        # чинятся руками (воткнуть флешку, подключить сетевой диск, закрыть
+        # программу, держащую каталог), но чинить надо КОНКРЕТНУЮ папку.
+        # Консоль печатает их строками, окно PyQt кладёт в подсказку — этот
+        # интерфейс называл одно число, то есть говорил о беде и не говорил,
+        # где её искать.
+        self.unread_tip.set("\n".join(unread))
         self.status.set(f"План готов: {len(self.moves)} шт. к перемещению.{tail}")
 
     def do_apply(self):
