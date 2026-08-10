@@ -286,6 +286,11 @@ def test_report_tells_the_truth_when_the_folder_changed_under_it(seed, tmp_path)
     planned_dst = {str(mv.src): mv.dst for mv in moves}
     spoil_before_apply(rng, moves)
     before_bodies = bodies(root, all3d)
+    # Имена вида `задача (1).csv` бывают и у обычных файлов — их пишет и сам
+    # генератор, и человек. Придуманным программой считается только то, чего до
+    # уборки на диске не было.
+    existed = {str(p) for base in (root, all3d) if base is not None
+               for p in base.rglob("*") if p.is_file()}
 
     result = apply(moves, config, dry_run=False)
 
@@ -309,7 +314,8 @@ def test_report_tells_the_truth_when_the_folder_changed_under_it(seed, tmp_path)
         # о котором в отчёте не сказано ни слова.
         p = Path(src)
         aside = p.with_name(f"{p.stem} (1){p.suffix}")
-        assert not (aside.exists() and not p.exists()), f"файл брошен в стороне: {aside}"
+        assert not (aside.exists() and str(aside) not in existed and not p.exists()), (
+            f"файл брошен в стороне: {aside}")
 
     for src, why in result.notes:
         assert src not in failed, "файл и в оговорках, и в ошибках"
