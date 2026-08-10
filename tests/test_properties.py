@@ -446,6 +446,83 @@ def test_two_sorts_undo_back_to_the_original_layout_in_any_order(seed, tmp_path)
         assert history.list_operations(root) == [], "в истории что-то осталось"
 
 
+@pytest.mark.parametrize("seed", seeds(6))
+def test_undo_stays_honest_when_moving_fails_midway(seed, tmp_path):
+    """Перемещение падает ПОСРЕДИ отката — и бухгалтерия всё равно сходится.
+
+    Порчу состояния гоняли вокруг применения; у отката проверяли, что он
+    правильно считает записи, но не то, как он ведёт себя, когда падает само
+    `shutil.move`. Ветки на этот случай (`mover.undo` — отвод в сторону не
+    прошёл, возврат назад не прошёл) трассировщик показывал непокрытыми, а
+    именно в такой непокрытой ветке однажды несколько сессий прожила починка,
+    которая не выполнялась ни разу.
+
+    Обещаний тут три, и все про честность: ничего не пропало, запись уходит из
+    журнала только когда откат с ней и правда закончил, и ни один файл не лежит
+    под именем, которого человек не давал и которое нигде не названо.
+    """
+    import shutil
+
+    rng = random.Random(seed)
+    config, root, all3d = sandbox(rng, tmp_path)
+    result = apply(
+        build_plan(config, send_3d_external=bool(all3d), deep=rng.random() < 0.5),
+        config, dry_run=False)
+    if not result.undo_log:
+        pytest.skip("двигать было нечего — журнала нет")
+
+    roots = [r for r in (root, all3d) if r is not None]
+    existed = {str(p) for b in roots for p in b.rglob("*") if p.is_file()}
+    before_bodies = bodies(root, all3d)
+    op = history.list_operations(root)[0]
+    left_before = journal(op.log_path)
+
+    real = shutil.move
+
+    def flaky(src, dst):
+        if rng.random() < 0.35:
+            raise OSError("диск отвалился посреди отката")
+        return real(src, dst)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(shutil, "move", flaky)
+    try:
+        notes = history.undo_operation(op, config)
+    finally:
+        monkeypatch.undo()
+
+    assert not set(before_bodies) - set(bodies(root, all3d)), "откат потерял содержимое"
+
+    left_after = journal(op.log_path) if op.log_path.exists() else []
+    assert len(left_after) <= len(left_before), "журнал после отката вырос"
+    for e in left_after:
+        assert e in left_before, f"в журнале появилась запись, которой не было: {e}"
+
+    # Запись осталась в журнале — значит откат её не доиграл, и человек обязан
+    # об этом услышать. Молчаливый «успешный» откат, после которого сортировка
+    # висит в истории неоткатанной, — худший из возможных исходов: снаружи он
+    # неотличим от полного, и следующая попытка возьмётся за файлы вслепую.
+    assert not left_after or notes, (
+        f"откат оставил в журнале {len(left_after)} записей и не сказал ни слова")
+
+    named = {n for n, _ in notes}
+    for e in (x for x in left_before if x not in left_after):
+        assert (Path(e["src"]).exists() or e["src"] in named or e["dst"] in named), (
+            f"запись стёрта, файла дома нет, оговорки нет: {e}")
+
+    spoken = "\n".join([str(w) for w, _ in notes] + [w for _, w in notes])
+    landed = {e["dst"] for e in left_after} | {e["src"] for e in left_before}
+    for base in roots:
+        for p in base.rglob("*"):
+            if not p.is_file() or ".sorter" in p.parts:
+                continue
+            if str(p) in existed or str(p) in landed:
+                continue
+            assert p.name in spoken, (
+                f"файл лежит под именем, которого никто не давал и которое "
+                f"нигде не названо: {p}")
+
+
 # --- канал жалоб наружу ------------------------------------------------------
 
 
