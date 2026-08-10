@@ -217,3 +217,82 @@ def test_window_stays_quiet_on_a_readable_folder(window):
 
     assert "не прочитано" not in win.status.text().lower()
     assert win.status.toolTip() == ""
+
+
+def test_the_line_left_after_applying_still_names_the_unread_folder(
+        window, shown, monkeypatch):
+    """«Перемещено: 1, ошибок: 0» — и ни слова о папке, которую не открыли.
+
+    Строку про непрочитанную папку ставит `preview`, а `do_apply` зовёт его и
+    тут же затирает итогом. Вместе со строкой уезжала и жалоба: в тот самый
+    момент, когда человек читает отчёт, окно докладывает о безупречном
+    прогоне, а файлы непрочитанной папки лежат неразобранными и в списке
+    неудач их нет — они в план не попадали вовсе.
+    """
+    from sorter import scanner
+
+    win, downloads = window
+    (downloads / "Медиа").mkdir()
+
+    def unreadable(folder, config, visited, problems=None):
+        scanner._unreadable(folder, OSError(5, "Отказано в доступе"), problems)
+        return []
+
+    monkeypatch.setattr(scanner, "_walk_managed", unreadable)
+    win.resort.setChecked(True)
+    win.preview()
+    assert "Не прочитано папок: 1" in win.status.text(), win.status.text()
+
+    win.do_apply()
+
+    assert win.status.text().startswith("Перемещено:"), win.status.text()
+    # Счёт после уборки другой: разложенное создало ещё одну папку программы,
+    # и обход спотыкается уже о две. Важно, что жалоба вообще осталась.
+    assert "Не прочитано папок" in win.status.text(), (
+        "после «Применить» окно молчит про папку, которую не открыло: "
+        f"{win.status.text()!r}")
+
+
+def test_the_window_greets_a_notice_calmly_and_a_breakage_loudly(app, tmp_path, monkeypatch):
+    """Окно PyQt на старте: уведомление — спокойным окном, поломка — тревожным.
+
+    Значок человек читает раньше заголовка, а выбирает его каждое окно у себя.
+    Пока оба списка жалоб были одним, «правило в Others пропущено» встречало
+    пользователя восклицательным знаком при каждом запуске — навсегда, потому
+    что такие строки нарочно остаются в файле.
+    """
+    from sorter.util import SETTINGS_ALARM
+
+    said = []
+    for kind in ("warning", "information"):
+        monkeypatch.setattr(
+            ui_qt.QMessageBox, kind,
+            staticmethod(lambda parent, title, text, *a, _k=kind, **kw:
+                         said.append((_k, title, text))))
+
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (tmp_path / "config.json").write_text(
+        json.dumps({"downloads_path": str(downloads)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    }, ensure_ascii=False), encoding="utf-8")
+
+    (tmp_path / "overrides.json").write_text(
+        '{"0001-0250.mp4": "Others"}', encoding="utf-8")
+    ui_qt.GlassWindow(tmp_path / "config.json").deleteLater()
+    kind, title, text = said[-1]
+    assert kind == "information", f"уведомление показано как поломка: {title!r}"
+    assert title != SETTINGS_ALARM and "неверной" not in text, text
+
+    (tmp_path / "overrides.json").write_text(
+        '{"0001-0250.mp4": "Others", "клип.mp4": "Медиа "}', encoding="utf-8")
+    ui_qt.GlassWindow(tmp_path / "config.json").deleteLater()
+    kind, title, text = said[-1]
+    assert kind == "warning", f"поломка показана как уведомление: {title!r}"
+    assert title == SETTINGS_ALARM
+    assert "Медиа " in text and "0001-0250.mp4" in text, text

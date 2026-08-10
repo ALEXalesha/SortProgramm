@@ -19,7 +19,9 @@ from .config import Config, OVERRIDES_FILENAME
 from .scanner import scan
 from .planner import build_plan, external_3d_warning, goes_by_extension, Move
 from .mover import apply
-from .util import rel_to, listing, report
+from .util import (PLAN_EMPTY, PLAN_NOT_BUILT, PLAN_NO_FOLDER, listing,
+                   nothing_to_apply, rel_to, report, report_title,
+                   settings_message)
 from . import ai
 from . import history
 
@@ -273,6 +275,12 @@ class GlassWindow(QWidget):
         # единственное место, где путь хранился (см. `_save_settings`).
         self.saved_path = self.config.downloads_path
         self.moves: list[Move] = []
+        # Почему план пуст. Пустой список получается тремя путями, и на
+        # «Применить» у них три разных ответа (`util.nothing_to_apply`).
+        self.plan_state = PLAN_NOT_BUILT
+        # Хвост строки состояния про папки, которые не удалось прочитать.
+        # Держим полем, потому что дописывает его и итог применения.
+        self.unread_tail = ""
         # Из чего построен показанный план (`_plan_key`). None — плана нет.
         self._planned_for: tuple | None = None
         self._drag_pos: QPoint | None = None
@@ -304,13 +312,17 @@ class GlassWindow(QWidget):
 
         self.setStyleSheet(STYLE)
 
-        if self.config.problems:
+        if self.config.problems or self.config.notices:
             # Без правил всё уедет в Others. Сказать надо до «Применить», а не
             # после — иначе пользователь увидит последствия, а не причину.
-            QMessageBox.warning(
-                self, "Настройки прочитаны не полностью",
-                "\n".join(self.config.problems)
-                + "\n\nПрограмма запустилась, но раскладка может быть неверной.")
+            #
+            # Поломка и уведомление отчитываются разными окнами: тревожный
+            # значок у строки «правило в Others пропущено» гнал человека
+            # чинить то, что и так верно (`util.settings_message`).
+            title, text, broken = settings_message(
+                self.config.problems, self.config.notices)
+            (QMessageBox.warning if broken else QMessageBox.information)(
+                self, title, text)
 
     def _title_bar(self):
         bar = QHBoxLayout()
@@ -533,6 +545,8 @@ class GlassWindow(QWidget):
         if not self.config.downloads_path or not root.is_dir():
             self.table.setRowCount(0)
             self.moves = []
+            self.plan_state = PLAN_NO_FOLDER
+            self.unread_tail = ""
             self.status.setText("Папка не найдена — укажи существующий путь.")
             return
         # Папки, которые не удалось прочитать: права, отключённый сетевой диск,
@@ -567,10 +581,18 @@ class GlassWindow(QWidget):
         # программы.
         warning = external_3d_warning(self.config, self.to_3d.isChecked())
         tail = f"   {warning}" if warning else ""
-        if unread:
-            tail += (f"   Не прочитано папок: {len(unread)} — их файлы в план "
-                     "не попали.")
+        # Ту же строку дописывает и итог применения. `do_apply` зовёт `preview`
+        # и тут же затирает его строку — нарочно, чтобы последнее слово
+        # осталось за тем, что случилось с файлами, — а вместе со строкой
+        # уезжала и жалоба. Выходило, что в момент, когда человек читает отчёт,
+        # окно докладывает о безупречном прогоне: «ошибок: 0», при том что
+        # файлы непрочитанной папки лежат неразобранными. Ошибкой это не
+        # считается и в список неудач не попадает: в плане их не было вовсе.
+        self.unread_tail = (f"   Не прочитано папок: {len(unread)} — их файлы "
+                            "в план не попали." if unread else "")
+        tail += self.unread_tail
         self.status.setToolTip("\n".join(unread))
+        self.plan_state = PLAN_EMPTY if not self.moves else ""
         self.status.setText(f"План готов: {len(self.moves)} шт.{tail}")
 
     def _save_overrides(self) -> str:
@@ -706,7 +728,9 @@ class GlassWindow(QWidget):
             QMessageBox.warning(
                 self, "Нет ключа",
                 "Положи ключ в файл deepseek_key.txt рядом с программой\n"
-                "или задай переменную окружения DEEPSEEK_API_KEY.")
+                "или задай переменную окружения DEEPSEEK_API_KEY.\n\n"
+                "В файле должен лежать сам ключ и больше ничего: заметку рядом "
+                "с ним программа ключом не считает.")
             return
         # Папки, которые не удалось прочитать, забираем тем же списком, каким их
         # забирает план. Обход умеет о них говорить, `build_plan` доносит их до
@@ -725,6 +749,12 @@ class GlassWindow(QWidget):
         self.status.setToolTip("\n".join(unread))
         unread_tail = (f"   Не прочитано папок: {len(unread)} — их файлы в "
                        "запрос не попали." if unread else "")
+        # Ту же строку дописывает и отчёт после ответа. Обход о папке говорит
+        # один раз, а прочитать её человек может только в той строке, которая
+        # осталась на экране, — а остаётся последняя. Спрашивает про папку
+        # именно эта кнопка, ей и отчитываться: пересчитывать заново значило бы
+        # гадать по другому обходу, с другой глубиной.
+        self._ai_unread = unread_tail
         # Одно имя — один вопрос. Ключ в overrides.json это имя без пути, поэтому
         # второй `клип.mp4` из соседней папки не добавляет вопросу ничего: ответ
         # будет тот же и распространится на оба файла. Раньше повторы уходили в
@@ -833,6 +863,10 @@ class GlassWindow(QWidget):
         if kept:
             notes.append(f"свои правила сохранены: {len(kept)}")
         tail = f" ({'; '.join(notes)})" if notes else ""
+        # Про непрочитанную папку говорит и эта строка: она остаётся на экране,
+        # а «без решения» рядом — совсем про другое (модель посмотрела и не
+        # смогла). Файлы такой папки в запрос не попадали вовсе.
+        tail += getattr(self, "_ai_unread", "")
         self.status.setText(f"ИИ разложил {len(fresh)} шт.{tail}")
         if lost and not failure:
             QMessageBox.warning(
@@ -901,7 +935,9 @@ class GlassWindow(QWidget):
         if self.moves and self._planned_for != self._plan_key():
             self.preview()
         if not self.moves:
-            QMessageBox.information(self, "Нет плана", "Сначала нажми «Очистить».")
+            # Три разных «двигать нечего» — три разных ответа. Общий с окном
+            # Tkinter, чтобы совет не расходился между интерфейсами.
+            QMessageBox.information(self, *nothing_to_apply(self.plan_state))
             return
         if not self.move_enabled.isChecked():
             QMessageBox.information(
@@ -922,9 +958,13 @@ class GlassWindow(QWidget):
         # В строку статуса — короткий итог, в окно — полный отчёт с именами.
         # Само число ошибок ни о чём не говорит: какой файл не переехал и
         # почему, видно только из списка (`util.report`).
-        self.status.setText(f"Перемещено: {result.moved}, ошибок: {len(result.errors)}")
+        self.status.setText(f"Перемещено: {result.moved}, ошибок: "
+                            f"{len(result.errors)}{self.unread_tail}")
+        # Заголовок общий с окном Tkinter (`util.report_title`): тревожный
+        # значок из окна уходит вместе с окном, а слово «Готово» над списком
+        # неудач остаётся в уведомлениях Windows.
         (QMessageBox.warning if result.errors or result.notes or result.undo_failed
-         else QMessageBox.information)(self, "Готово", report(result))
+         else QMessageBox.information)(self, report_title(result), report(result))
 
 
 def launch(config_path: Path) -> None:

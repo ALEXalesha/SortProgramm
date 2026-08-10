@@ -11,7 +11,8 @@ from tkinter import ttk, messagebox
 from .config import Config
 from .planner import build_plan, external_3d_warning, Move
 from .mover import apply
-from .util import rel_to as _rel_to, report
+from .util import (PLAN_EMPTY, PLAN_NOT_BUILT, PLAN_NO_FOLDER, nothing_to_apply,
+                   rel_to as _rel_to, report, report_title, settings_message)
 
 
 class _Tip:
@@ -60,6 +61,12 @@ class SorterApp:
         self.config_path = config_path
         self.config = Config.load(config_path)
         self.moves: list[Move] = []
+        # Почему план пуст. Пустой список получается тремя путями, и на
+        # «Применить» у них три разных ответа (`util.nothing_to_apply`).
+        self.plan_state = PLAN_NOT_BUILT
+        # Хвост строки состояния про папки, которые не удалось прочитать.
+        # Держим полем, потому что дописывает его и итог применения.
+        self.unread_tail = ""
         self.root = root
 
         root.title("Сортировщик загрузок")
@@ -78,11 +85,13 @@ class SorterApp:
         # Про испорченные настройки предупреждали окно PyQt и CLI, а этот
         # интерфейс молчал: без правил всё уезжает в Others, и снаружи это
         # выглядит как нормальный план. Сказать надо до «Применить».
-        if self.config.problems:
-            messagebox.showwarning(
-                "Настройки прочитаны не полностью",
-                "\n".join(self.config.problems)
-                + "\n\nПрограмма запустилась, но раскладка может быть неверной.")
+        #
+        # Поломка и уведомление — разные окна: подчищенное разбором раскладку
+        # не портит, и пугать им незачем (`util.settings_message`).
+        if self.config.problems or self.config.notices:
+            title, text, broken = settings_message(
+                self.config.problems, self.config.notices)
+            (messagebox.showwarning if broken else messagebox.showinfo)(title, text)
 
     # --- разметка ---
 
@@ -178,7 +187,18 @@ class SorterApp:
         self.root.destroy()
 
     def open_downloads(self):
+        """Открывает папку загрузок в проводнике.
+
+        Папку проверяем сами, как это делает окно PyQt. Без проверки
+        `os.startfile` показывал `[WinError 2] Не удается найти указанный
+        файл` — сообщение системы про путь, который окно написало строкой
+        выше своими словами («Папка не найдена: …»). Два разных ответа на
+        одну и ту же беду, и второй ещё и не по-русски.
+        """
         path = self.config.downloads_path
+        if not path or not Path(path).is_dir():
+            messagebox.showinfo("Папка не найдена", "Укажи существующую папку.")
+            return
         try:
             if sys.platform == "win32":
                 os.startfile(path)  # type: ignore[attr-defined]
@@ -194,6 +214,8 @@ class SorterApp:
         if not Path(self.config.downloads_path).is_dir():
             self.tree.delete(*self.tree.get_children())
             self.moves = []
+            self.plan_state = PLAN_NO_FOLDER
+            self.unread_tail = ""
             # Список от прошлого плана здесь уже неправда: папки той нет.
             self.unread_tip.set("")
             self.status.set(
@@ -225,9 +247,15 @@ class SorterApp:
         # неотличимо от исправной работы. Текст общий с окном PyQt и консолью.
         warning = external_3d_warning(self.config, self.to_3d.get())
         tail = f"   {warning}" if warning else ""
-        if unread:
-            tail += (f"   Не прочитано папок: {len(unread)} — их файлы в план "
-                     "не попали.")
+        # Ту же строку дописывает и итог применения: `do_apply` зовёт `preview`
+        # и тут же затирает его строку, а вместе с ней уезжала и жалоба. В тот
+        # самый момент, когда человек читает отчёт, окно докладывало о
+        # безупречном прогоне — «ошибок: 0», — при том что файлы непрочитанной
+        # папки лежат неразобранными. В список неудач они не попадают: их не
+        # было и в плане.
+        self.unread_tail = (f"   Не прочитано папок: {len(unread)} — их файлы "
+                            "в план не попали." if unread else "")
+        tail += self.unread_tail
         # В строку — счёт, в подсказку мышью — сами имена. Одного числа мало
         # ровно потому, зачем жалоба и заведена: причины у неё временные и
         # чинятся руками (воткнуть флешку, подключить сетевой диск, закрыть
@@ -236,11 +264,14 @@ class SorterApp:
         # интерфейс называл одно число, то есть говорил о беде и не говорил,
         # где её искать.
         self.unread_tip.set("\n".join(unread))
+        self.plan_state = PLAN_EMPTY if not self.moves else ""
         self.status.set(f"План готов: {len(self.moves)} шт. к перемещению.{tail}")
 
     def do_apply(self):
         if not self.moves:
-            messagebox.showinfo("Нет плана", "Сначала нажми «Очистить».")
+            # Три разных «двигать нечего» — три разных ответа. Общий с окном
+            # PyQt, чтобы совет не расходился между интерфейсами.
+            messagebox.showinfo(*nothing_to_apply(self.plan_state))
             return
         if not self.move_enabled.get():
             messagebox.showinfo(
@@ -258,11 +289,12 @@ class SorterApp:
         # В строку статуса — короткий итог, в окно — полный отчёт с именами:
         # одно лишь число ошибок не говорит, какой файл остался в загрузках и
         # почему. Текст общий с окном PyQt и консолью (`util.report`).
-        self.status.set(f"Перемещено: {result.moved}, ошибок: {len(result.errors)}")
+        self.status.set(f"Перемещено: {result.moved}, ошибок: "
+                        f"{len(result.errors)}{self.unread_tail}")
         if result.errors or result.notes or result.undo_failed:
-            messagebox.showwarning("Готово с оговорками", report(result))
+            messagebox.showwarning(report_title(result), report(result))
         else:
-            messagebox.showinfo("Готово", report(result))
+            messagebox.showinfo(report_title(result), report(result))
 
 
 def launch(config_path: Path) -> None:

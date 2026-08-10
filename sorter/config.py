@@ -680,7 +680,7 @@ def _text(raw, default: str, where: str, key: str, problems: list[str]) -> str:
 
 
 def _drop_frozen_rules(
-    overrides: dict[str, str], fallback: str, where: str, problems: list[str]
+    overrides: dict[str, str], fallback: str, where: str, notices: list[str]
 ) -> dict[str, str]:
     """Убирает ручные правила, ведущие в запасную категорию.
 
@@ -707,6 +707,14 @@ def _drop_frozen_rules(
     Сверяемся по правилам файловой системы (`folder_key`): `others` и `Others`
     на Windows — одна и та же папка, и правило, набранное не тем регистром,
     морозит файл точно так же.
+
+    Говорим об этом через `notices`, а не через `problems`, и разница не в
+    словах. `problems` печатается под заголовком «Настройки прочитаны не
+    полностью» с подписью «раскладка может быть неверной» — для этой строки
+    ложны обе фразы: файл прочитан целиком, а раскладка от пропуска становится
+    ВЕРНЕЕ. Показывалась она при каждом запуске навсегда, потому что строки
+    нарочно остаются в файле, — то есть постоянная тревога о том, что всё в
+    порядке, в одном списке с настоящими поломками (`util.settings_message`).
     """
     frozen = [name for name, category in overrides.items()
               if folder_key(category) == folder_key(fallback)]
@@ -714,7 +722,7 @@ def _drop_frozen_rules(
         return overrides
     shown = ", ".join(f"«{name}»" for name in frozen[:3])
     tail = f" и ещё {len(frozen) - 3}" if len(frozen) > 3 else ""
-    problems.append(
+    notices.append(
         f"{where}: правила в запасную категорию «{fallback}» пропущены "
         f"({len(frozen)} шт.: {shown}{tail}). Такое правило ничего не решает — "
         f"без него файл уедет в «{fallback}» сам, — а в новую категорию "
@@ -835,6 +843,14 @@ class Config:
     fallback_type: str = "Misc"
     extra: dict = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
+    # Что разбор подчистил сам: файл прочитан целиком, раскладка верна, а
+    # сказать всё-таки надо — строка в файле осталась и убрать её стоит.
+    #
+    # Держим отдельно от `problems` потому, что интерфейсы печатают тот список
+    # под заголовком «Настройки прочитаны не полностью» и подписью «раскладка
+    # может быть неверной». Уведомление, попавшее туда, врёт обеими фразами и
+    # висит при каждом запуске навсегда (`util.settings_message`).
+    notices: list[str] = field(default_factory=list)
     # `overrides.json` рядом лежит, но разобрать его не вышло.
     #
     # Отличать это от «файла нет» приходится потому, что писать в него умеет
@@ -876,6 +892,10 @@ class Config:
         """
         path = Path(path)
         problems: list[str] = []
+        # Подчищенное самим разбором. Список отдельный, а не пометка на строке:
+        # решает по нему интерфейс, и решать он должен до того, как выбрал
+        # заголовок (см. `util.settings_message`).
+        notices: list[str] = []
         data = _read_json(path, problems)
         # Файл есть, а разобрать его не вышло. Дальше работаем с пустым
         # словарём, как и раньше, но запись на это место закрываем: там лежит
@@ -981,7 +1001,7 @@ class Config:
         # имя запасной папки для этого надо, поэтому проверка идёт после разбора
         # правил, а не внутри него.
         overrides = _drop_frozen_rules(
-            overrides, fallback_category, overrides_name, problems)
+            overrides, fallback_category, overrides_name, notices)
 
         # Что из файла не доехало до `overrides`. Работать с этим нельзя, а
         # стирать — тем более: строку писали руками, второй копии у неё нет.
@@ -1057,6 +1077,7 @@ class Config:
             fallback_type=fallback_type,
             extra={k: v for k, v in data.items() if k not in skip},
             problems=problems,
+            notices=notices,
             overrides_unreadable=overrides_unreadable,
             overrides_dropped=overrides_dropped,
             settings_unreadable=settings_unreadable,

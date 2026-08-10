@@ -681,3 +681,34 @@ def test_nothing_lost_means_no_extra_words(window):
     win._ai_done({"новый.mp4": "Медиа"})
 
     assert "не дошло" not in win.status.text()
+
+
+def test_the_final_line_still_names_the_folder_that_was_not_read(window, monkeypatch):
+    """«ИИ разложил N шт.» молчало про папку, которую обход не открыл.
+
+    Кнопку научили забирать жалобы у обхода и показывать их двумя своими
+    строками: «Нечего разбирать…» и «Спрашиваю DeepSeek по N именам…». А
+    строку, которая остаётся на экране ПОСЛЕ ответа, чинить забыли — и ровно
+    её человек читает, заплатив за запрос. Соседний счёт в ней про другое:
+    «без решения» — это имена, которые модель видела и не смогла, а файлы
+    непрочитанной папки в список не попадали вовсе.
+    """
+    from sorter import scanner
+
+    def unreadable(folder, config, visited, problems=None):
+        scanner._unreadable(folder, OSError(5, "Отказано в доступе"), problems)
+        return []
+
+    monkeypatch.setattr(scanner, "_walk_managed", unreadable)
+    win = window
+    win.resort.setChecked(True)
+
+    win.run_ai()
+    assert "Не прочитано папок: 1" in win.status.text(), win.status.text()
+
+    win._ai_done({"новый.mp4": "Медиа"})
+
+    assert win.status.text().startswith("ИИ разложил"), win.status.text()
+    assert "Не прочитано папок: 1" in win.status.text(), (
+        "после платного запроса окно молчит про папку, которую не открыло: "
+        f"{win.status.text()!r}")

@@ -12,7 +12,7 @@ from pathlib import Path
 from sorter.config import Config, NO_DOWNLOADS_PROBLEM, path_3d_reason
 from sorter.planner import build_plan, external_3d_warning
 from sorter.mover import apply
-from sorter.util import rel_to, report
+from sorter.util import rel_to, report, settings_message
 
 # В собранном .exe (PyInstaller onefile) config.json/overrides.json лежат рядом с .exe,
 # чтобы их можно было править без пересборки. В обычном запуске — рядом с main.py.
@@ -48,10 +48,15 @@ def run_cli(path: str | None, do_apply: bool, to_3d: bool | None, deep: bool) ->
     # Окно про испорченные настройки предупреждает окном, а CLI молчал — и
     # раскладка «всё в Others» из-за нечитаемого rules.json выглядела как
     # нормальный план. Сказать надо до `--apply`, а не после.
-    if config.problems:
-        print("Настройки прочитаны не полностью:")
-        for problem in config.problems:
-            print(f"  ! {problem}")
+    #
+    # Заголовок и текст общие на три интерфейса (`util.settings_message`):
+    # подчищенное разбором печатается отдельно от поломок, иначе постоянное
+    # «правило в Others пропущено» стоит в консоли под словами о неверной
+    # раскладке — и настоящие поломки рядом перестают читать.
+    if config.problems or config.notices:
+        title, text, _ = settings_message(config.problems, config.notices)
+        print(f"{title}:")
+        print("\n".join(f"  {line}" if line else "" for line in text.splitlines()))
         print()
 
     # Опечатка в пути выглядела ровно как прибранная папка: «Найдено к

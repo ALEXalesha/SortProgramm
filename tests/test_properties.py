@@ -715,17 +715,22 @@ def _tk_app(config_path, rng):
     from sorter import ui
 
     class Box:
-        """Модальные окна в пробнике: помним, что сказали, и идём дальше."""
+        """Модальные окна в пробнике: помним, что сказали, и идём дальше.
+
+        Третьим членом — каким окном сказали. Значок отличает уведомление от
+        поломки не меньше, чем слова: спокойное «i» и тревожное «!» человек
+        читает раньше заголовка.
+        """
         said: list = []
 
         @classmethod
-        def showinfo(cls, title, text): cls.said.append((title, text))
+        def showinfo(cls, title, text): cls.said.append((title, text, "info"))
 
         @classmethod
-        def showwarning(cls, title, text): cls.said.append((title, text))
+        def showwarning(cls, title, text): cls.said.append((title, text, "warn"))
 
         @classmethod
-        def showerror(cls, title, text): cls.said.append((title, text))
+        def showerror(cls, title, text): cls.said.append((title, text, "err"))
 
         @staticmethod
         def askyesno(title, text): return True
@@ -889,3 +894,340 @@ def test_a_broken_3d_path_never_takes_the_program_down(tmp_path):
             f"отчёт не сходится с планом на пути {raw!r}")
         assert not any("\x00" in str(mv.dst) for mv in moves), (
             f"план ведёт файл по пути, которого файловая система не примет: {raw!r}")
+
+
+# --- отчёт о настройках не спорит сам с собой ----------------------------------
+
+
+def _frozen_rules_case(tmp_path: Path) -> Path:
+    """Настройки, где всё в порядке, а ручных правил «в Others» три штуки.
+
+    Файлы читаются целиком, раскладка выходит верная — точнее, чем была бы с
+    этими правилами. Больше поводов сказать хоть слово тут нет ни одного.
+    """
+    root = tmp_path / "загрузки"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "0001-0250.mp4").write_text("рендер", encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "patterns": {"3D": [r"^\d{4}-\d{4}\.(mp4|png)$"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "3D", "Videos", "Others", "Misc"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "config.json").write_text(json.dumps({
+        "downloads_path": str(root),
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "overrides.json").write_text(json.dumps({
+        "0001-0250.mp4": "Others",
+        "0251-0500.mp4": "Others",
+        "непонятно.qqq": "others",
+    }, ensure_ascii=False), encoding="utf-8")
+    return tmp_path / "config.json"
+
+
+def test_dropped_frozen_rules_are_not_announced_as_a_breakage(tmp_path):
+    """Пропущенное правило «в Others» — не поломка, и говорить о нём надо иначе.
+
+    Разбор выбрасывает такие правила нарочно: без них файл едет в ту же
+    запасную папку, но по текущим правилам, а с ними — мимо всего, что
+    появилось потом. То есть раскладка от пропуска становится ВЕРНЕЕ.
+
+    Жалоба при этом складывалась в общий список `problems`, а все три
+    интерфейса печатают его под заголовком «Настройки прочитаны не полностью»
+    с подписью «раскладка может быть неверной». Обе фразы про эту строку
+    ложны: файл прочитан целиком, раскладка верна. Висит сообщение при каждом
+    запуске навсегда — строки нарочно остаются в файле, — и человек либо идёт
+    искать поломку, которой нет, либо перестаёт читать этот список вовсе,
+    вместе с настоящими поломками рядом.
+    """
+    from sorter.util import SETTINGS_ALARM, settings_message
+
+    config = Config.load(_frozen_rules_case(tmp_path))
+
+    assert config.overrides == {}, "правила «в Others» должны быть выброшены"
+    assert config.notices, "о выброшенных правилах надо сказать хоть что-то"
+    assert not config.problems, (
+        "поломок тут нет ни одной, а разбор их насчитал: " + "; ".join(config.problems))
+
+    title, text, broken = settings_message(config.problems, config.notices)
+    assert not broken, "уведомление объявлено поломкой"
+    assert title != SETTINGS_ALARM, f"заголовок обещает поломку: {title!r}"
+    assert "неверной" not in text, f"текст пугает неверной раскладкой: {text!r}"
+    assert "0001-0250.mp4" in text, "сказали о пропуске, но не назвали строку"
+
+
+def test_the_startup_report_separates_breakages_from_notices(tmp_path):
+    """Настоящая поломка рядом с уведомлением: заголовок остаётся тревожным.
+
+    Смешивать их в одном списке нельзя, но и терять уведомление, когда рядом
+    есть поломка, тоже: строки в файле остались, и убрать их всё ещё стоит.
+    """
+    from sorter.util import SETTINGS_ALARM, settings_message
+
+    config_path = _frozen_rules_case(tmp_path)
+    (tmp_path / "overrides.json").write_text(
+        '{"0001-0250.mp4": "Others", "клип.mp4": "Медиа "}',
+        encoding="utf-8")
+
+    config = Config.load(config_path)
+
+    assert config.problems, "правило с непригодной категорией — поломка"
+    assert config.notices, "правило «в Others» осталось без единого слова"
+
+    title, text, broken = settings_message(config.problems, config.notices)
+    assert broken and title == SETTINGS_ALARM
+    assert "Медиа " in text and "0001-0250.mp4" in text, (
+        f"половина сказанного потерялась: {text!r}")
+
+
+def test_all_three_interfaces_say_the_same_about_the_settings(tmp_path):
+    """Консоль, PyQt и Tkinter об одних настройках говорят одними словами.
+
+    Текст этот собирает `util.settings_message` — по той же причине, по какой
+    общими сделаны `util.report` и `config.path_3d_reason`: расходясь, три
+    интерфейса перестают проверять друг друга.
+    """
+    import ast
+
+    root = Path(__file__).resolve().parent.parent
+    hardcoded = []
+    for path in (root / "sorter" / "ui.py", root / "sorter" / "ui_qt.py",
+                 root / "main.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if "прочитаны не полностью" in node.value:
+                    hardcoded.append(f"{path.name}:{node.lineno}")
+
+    assert not hardcoded, (
+        "заголовок набран во второй раз — однажды он разойдётся с остальными:\n  "
+        + "\n  ".join(hardcoded))
+
+
+# --- «Применить», когда двигать нечего ------------------------------------------
+
+
+def _empty_case(tmp_path: Path, downloads: str) -> Path:
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+        "fallback_category": "Others",
+        "fallback_type": "Misc",
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "config.json").write_text(json.dumps(
+        {"downloads_path": downloads}, ensure_ascii=False), encoding="utf-8")
+    return tmp_path / "config.json"
+
+
+def test_the_window_tells_the_three_empty_plans_apart(tmp_path):
+    """«Нет плана» значило три разных вещи, а совет давало один.
+
+    Пустой `moves` получается тремя путями: план ещё не строили, папки на диске
+    нет, план построен и в нём ноль строк. Ответ на «Применить» был на все три
+    один — «Сначала нажми «Очистить»», — и в двух случаях из трёх он неверен.
+
+    На ненайденной папке он вдобавок спорит с соседней строкой: окно в ту же
+    секунду пишет «Папка не найдена», а кнопка советует нажать «Очистить»,
+    после чего окно скажет ровно то же самое. Круг замкнут, и выйти из него
+    подсказкой нельзя. На прибранной папке совет ведёт по тому же кругу, только
+    тише: человек жмёт «Очистить» ещё раз и получает всё те же ноль строк.
+    """
+    from sorter.util import (PLAN_EMPTY, PLAN_NOT_BUILT, PLAN_NO_FOLDER,
+                             nothing_to_apply)
+
+    titles = {state: nothing_to_apply(state)[0]
+              for state in (PLAN_NOT_BUILT, PLAN_NO_FOLDER, PLAN_EMPTY)}
+    assert len(set(titles.values())) == 3, (
+        f"три разных состояния отвечают одними словами: {titles}")
+
+    advice = nothing_to_apply(PLAN_NO_FOLDER)[1] + nothing_to_apply(PLAN_EMPTY)[1]
+    assert "Очистить" not in advice, (
+        "совет нажать «Очистить» ведёт по кругу: окно ответит тем же самым")
+
+
+def test_the_tk_window_names_the_reason_it_moves_nothing(tmp_path):
+    """Окно Tkinter: три состояния — три разных ответа, и файлы не тронуты."""
+    from sorter.util import PLAN_EMPTY, PLAN_NOT_BUILT, PLAN_NO_FOLDER
+
+    root = tmp_path / "загрузки"
+    root.mkdir()
+    config_path = _empty_case(tmp_path, str(root))
+
+    app, box, frame = _tk_app(config_path, random.Random(1))
+    if app is None:
+        pytest.skip("экрана нет — окно не поднять")
+    try:
+        app.move_enabled.set(True)
+
+        assert app.plan_state == PLAN_NOT_BUILT
+        app.do_apply()
+        first = box.said[-1][0]
+
+        app.preview()                       # папка есть, но пуста
+        assert app.plan_state == PLAN_EMPTY, app.status.get()
+        app.do_apply()
+        empty = box.said[-1][0]
+
+        app.config.downloads_path = str(root / "нетути")
+        app.preview()
+        assert app.plan_state == PLAN_NO_FOLDER, app.status.get()
+        app.do_apply()
+        gone = box.said[-1][0]
+
+        assert len({first, empty, gone}) == 3, (
+            f"окно отвечает одинаково на разное: {first!r}, {empty!r}, {gone!r}")
+        assert "Очистить" not in box.said[-1][1], (
+            f"на ненайденной папке совет ведёт по кругу: {box.said[-1][1]!r}")
+    finally:
+        frame.destroy()
+
+
+def test_both_windows_title_the_report_the_same_way(tmp_path):
+    """Отчёт с оговорками не называется «Готово» в одном окне и иначе в другом.
+
+    Текст отчёта давно общий (`util.report`), а заголовок каждое окно ставило
+    своё: Tkinter отличал «Готово с оговорками» от «Готово», PyQt показывал
+    тревожный значок под словом «Готово». Значок в списке уведомлений Windows
+    не остаётся, а заголовок остаётся.
+    """
+    import ast
+
+    from sorter.mover import Result
+    from sorter.util import report_title
+
+    assert report_title(Result(planned=1, moved=1)) == "Готово"
+    with_notes = Result(planned=1, moved=1)
+    with_notes.notes.append(("клип.mp4", "лёг под другим именем"))
+    assert report_title(with_notes) != "Готово", (
+        "оговорки в отчёте, а заголовок обещает гладкий прогон")
+
+    root = Path(__file__).resolve().parent.parent
+    hardcoded = []
+    for path in (root / "sorter" / "ui.py", root / "sorter" / "ui_qt.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and node.value == "Готово":
+                hardcoded.append(f"{path.name}:{node.lineno}")
+    assert not hardcoded, (
+        "заголовок отчёта набран на месте — однажды окна разойдутся:\n  "
+        + "\n  ".join(hardcoded))
+
+
+# --- непрочитанная папка не должна теряться по дороге ---------------------------
+#
+# Пробник на ту же беду в окне PyQt живёт в `test_ui_ai.py`: Tk и Qt в одном
+# процессе роняют его без traceback, а корень Tk тут поднят на весь набор.
+
+
+def test_the_tk_window_greets_a_notice_calmly_and_a_breakage_loudly(tmp_path):
+    """Окно на старте: подчищенное разбором — спокойным окном, поломка — тревожным.
+
+    Проверяем в самом окне, а не только в тексте: значок человек читает раньше
+    заголовка, а выбирает его каждое окно у себя. Пока списки жалоб были одним,
+    «правило в Others пропущено» встречало пользователя восклицательным знаком
+    при каждом запуске — навсегда, потому что строки нарочно остаются в файле.
+    """
+    from sorter.util import SETTINGS_ALARM
+
+    quiet = tmp_path / "тихо"
+    quiet.mkdir()
+    app, box, frame = _tk_app(_frozen_rules_case(quiet), random.Random(1))
+    if app is None:
+        pytest.skip("экрана нет — окно не поднять")
+    try:
+        assert box.said, "про выброшенные правила окно не сказало ничего"
+        title, text, kind = box.said[0]
+        assert kind == "info", f"уведомление показано как поломка: {title!r}"
+        assert title != SETTINGS_ALARM and "неверной" not in text, text
+    finally:
+        frame.destroy()
+
+    loud = tmp_path / "громко"
+    loud.mkdir()
+    config_path = _frozen_rules_case(loud)
+    (loud / "overrides.json").write_text(
+        '{"0001-0250.mp4": "Others", "клип.mp4": "Медиа "}', encoding="utf-8")
+    app, box, frame = _tk_app(config_path, random.Random(1))
+    try:
+        title, text, kind = box.said[0]
+        assert kind == "warn", f"поломка показана как уведомление: {title!r}"
+        assert title == SETTINGS_ALARM
+        assert "Медиа " in text and "0001-0250.mp4" in text, (
+            f"половина сказанного потерялась: {text!r}")
+    finally:
+        frame.destroy()
+
+
+def test_the_line_left_after_applying_still_names_the_unread_folder(tmp_path):
+    """«Перемещено: 2, ошибок: 0» — и ни слова о папке, которую не открыли.
+
+    Строку про непрочитанную папку ставит `preview`, а `do_apply` зовёт его и
+    тут же затирает итогом — нарочно, чтобы последнее слово осталось за тем,
+    что случилось с файлами. Вместе со строкой уезжала и жалоба, то есть ровно
+    в тот момент, когда человек читает отчёт, окно докладывает о безупречном
+    прогоне: ноль ошибок, всё разложено. А файлы непрочитанной папки в плане не
+    участвовали и лежат неразобранными — ошибкой это не считается, и в списке
+    неудач их нет.
+    """
+    from sorter import scanner
+
+    root = tmp_path / "загрузки"
+    (root / "Медиа").mkdir(parents=True)
+    (root / "клип.mp4").write_text("тело", encoding="utf-8")
+    (root / "Медиа" / "старое.mp4").write_text("тело", encoding="utf-8")
+    config_path = _empty_case(tmp_path, str(root))
+
+    def unreadable(folder, config, visited, problems=None):
+        scanner._unreadable(folder, OSError(5, "Отказано в доступе"), problems)
+        return []
+
+    app, box, frame = _tk_app(config_path, random.Random(1))
+    if app is None:
+        pytest.skip("экрана нет — окно не поднять")
+    walked = scanner._walk_managed
+    scanner._walk_managed = unreadable
+    try:
+        app.resort.set(True)
+        app.preview()
+        assert "Не прочитано папок: 1" in app.status.get()
+
+        app.move_enabled.set(True)
+        app.do_apply()
+
+        assert app.status.get().startswith("Перемещено:"), app.status.get()
+        assert "Не прочитано папок: 1" in app.status.get(), (
+            "после «Применить» окно молчит про папку, которую не открыло: "
+            f"{app.status.get()!r}")
+    finally:
+        scanner._walk_managed = walked
+        frame.destroy()
+
+
+def test_the_tk_window_names_a_missing_folder_instead_of_a_winerror(tmp_path):
+    """«📂 Открыть» на ненайденной папке: окна должны говорить одно и то же.
+
+    PyQt проверяет папку сам и отвечает «Папка не найдена. Укажи существующую
+    папку». Tkinter звал `os.startfile` вслепую и показывал `[WinError 2] Не
+    удается найти указанный файл` — сообщение системы про путь, который окно
+    само же и написало строкой выше.
+    """
+    root = tmp_path / "загрузки"
+    root.mkdir()
+    config_path = _empty_case(tmp_path, str(root / "нетути"))
+
+    app, box, frame = _tk_app(config_path, random.Random(1))
+    if app is None:
+        pytest.skip("экрана нет — окно не поднять")
+    try:
+        box.said.clear()
+        app.open_downloads()
+        assert box.said, "кнопка промолчала о ненайденной папке"
+        title, text = box.said[-1][0], box.said[-1][1]
+        assert "WinError" not in text and "Errno" not in text, (
+            f"вместо слов показан код системы: {title!r} / {text!r}")
+        assert "не найдена" in title.lower(), f"заголовок не про то: {title!r}"
+    finally:
+        frame.destroy()

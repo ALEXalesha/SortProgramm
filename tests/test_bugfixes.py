@@ -2478,7 +2478,10 @@ def test_rule_into_the_fallback_category_is_dropped(tmp_path):
     assert "0001-0250.mp4" not in config.overrides
     assert config.overrides == {"клип.mp4": "Медиа"}, "чужие правила не трогаем"
     assert explain_category("0001-0250.mp4", "", config) == ("3D", "шаблон")
-    assert any("0001-0250.mp4" in p for p in config.problems), config.problems
+    # Уведомление, а не поломка: файл прочитан целиком, а раскладка от пропуска
+    # этой строки становится вернее (`util.settings_message`).
+    assert any("0001-0250.mp4" in n for n in config.notices), config.notices
+    assert not config.problems, config.problems
 
 
 def test_rule_into_the_fallback_written_in_other_case_is_dropped_too(tmp_path):

@@ -178,6 +178,36 @@ def parse_ai_response(
 _KEY_ENCODINGS = ("utf-8-sig", "utf-16")
 
 
+def _usable_key(text: str) -> str:
+    """Первая строка, которую примет заголовок Authorization. Иначе пустая.
+
+    Ключ — это одна строка из латиницы и дефисов, и всё остальное в файле
+    ключом не является. Читался файл целиком, а рядом с ключом пишут заметки:
+    «sk-… » первой строкой, «ключ от 2 июня» второй. Обе уезжали в заголовок
+    одной склейкой, `urllib` кодирует заголовки в latin-1, и кириллица туда не
+    влезает — человек получал «'latin-1' codec can't encode characters in
+    position 27-30», где нет ни слова ни про ключ, ни про файл.
+
+    Тот же фильтр здесь уже стоял, но только на одной форме мусора: метку BOM
+    и UTF-16 из Блокнота сняли, а строку рядом — нет. Проверка была на
+    кодировке файла, а не на пригодности того, что из него вышло.
+
+    Непригодную строку пропускаем, а не бросаем разбор: заметку пишут и
+    ПЕРЕД ключом. Не осталось ни одной — значит ключа в файле нет, и окно
+    скажет, куда его положить.
+    """
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            line.encode("latin-1")
+        except UnicodeEncodeError:
+            continue
+        return line
+    return ""
+
+
 def load_api_key(base_dir: Path) -> str | None:
     """Ключ из переменной окружения или файла deepseek_key.txt рядом с программой.
 
@@ -194,19 +224,21 @@ def load_api_key(base_dir: Path) -> str | None:
 
     Файл, который не разобрать ничем (или который не открыть), — это «ключа
     нет». Окно на такой ответ говорит, куда его положить: подсказка на месте,
-    программа жива.
+    программа жива. Так же считается и файл, в котором лежит что угодно, кроме
+    ключа: заметка, подпись, пустые строки (`_usable_key`).
     """
-    env = os.environ.get("DEEPSEEK_API_KEY")
+    env = _usable_key(os.environ.get("DEEPSEEK_API_KEY") or "")
     if env:
-        return env.strip()
+        return env
     key_file = Path(base_dir) / KEY_FILENAME
     for encoding in _KEY_ENCODINGS:
         try:
-            text = key_file.read_text(encoding=encoding).strip()
+            text = key_file.read_text(encoding=encoding)
         except (OSError, ValueError):
             continue
-        if text:
-            return text
+        key = _usable_key(text)
+        if key:
+            return key
     return None
 
 
