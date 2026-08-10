@@ -608,6 +608,47 @@ def test_readable_overrides_do_not_stop_the_request(window, tmp_path):
     assert FakeWorker.seen == ["новый.mp4"]
 
 
+def test_ai_says_when_a_folder_could_not_be_read(window, tmp_path, monkeypatch):
+    """«Нечего разбирать» на нечитаемой папке — тот же нечестный ноль.
+
+    Про такие папки говорят все, кто строит план: обход складывает жалобы, а
+    `build_plan` доносит их до трёх интерфейсов. Кнопка «✨ ИИ» зовёт обход
+    напрямую, четвёртым читателем, и список жалоб просто не забирала — то есть
+    починку до неё не донесли.
+
+    Выходит хуже, чем у плана. Там ноль хотя бы честно называется планом, а
+    здесь окно отвечает «Нечего разбирать» — фраза, которая значит «всё уже
+    разложено», — глядя на папку, полную файлов, которую оно не смогло
+    открыть. Соседняя кнопка на той же папке в ту же секунду говорит «Не
+    прочитано папок: 1».
+    """
+    win = window
+    downloads = tmp_path / "загрузки"
+    real = Path.iterdir
+
+    def guard(self):
+        if self == downloads:
+            raise PermissionError(13, "Отказано в доступе")
+        return real(self)
+
+    monkeypatch.setattr(Path, "iterdir", guard)
+    FakeWorker.seen = None
+
+    win.run_ai()
+
+    assert FakeWorker.seen is None, "спрашивать было не о чем"
+    assert "не прочитано" in win.status.text().lower(), win.status.text()
+    assert str(downloads) in win.status.toolTip()
+
+
+def test_ai_stays_quiet_on_a_readable_folder(window):
+    """Обычная папка лишней строки не рождает."""
+    window.run_ai()
+
+    assert "не прочитано" not in window.status.text().lower()
+    assert window.status.toolTip() == ""
+
+
 def test_lost_batches_are_named_apart_from_no_decision(window, monkeypatch):
     """«Без решения» и «не дошло до модели» — разные вещи, и лечатся разным.
 

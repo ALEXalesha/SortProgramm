@@ -101,6 +101,37 @@ def test_undo_keeps_log_when_file_did_not_return(tmp_path):
     assert len(history.list_operations(tmp_path)) == 1, "журнал удалён — откат не повторить"
 
 
+def test_undo_says_when_it_could_not_rewrite_the_journal(tmp_path, monkeypatch):
+    """Неудачу переписать журнал глотали молча — а она меняет смысл истории.
+
+    Журнал лежит в папке пользователя: файл может быть только для чтения, его
+    может держать антивирус, на диске может кончиться место. Файлы при этом
+    вернулись, а запись осталась лежать целиком — то есть сортировка висит в
+    «🕘 Истории» как неоткатанная, и повторная отмена берётся за файлы, которые
+    уже дома. Ровно та беда, о которой `apply` кричит отдельной строкой, когда
+    журнал не записался: потеря или порча возможности откатить — это ошибка, и
+    молчать о ней нельзя.
+    """
+    cfg = make_config(tmp_path)
+    src = tmp_path / "a.pdf"
+    touch(src, "data")
+    apply([Move(src, tmp_path / "Others" / "Documents" / "a.pdf")], cfg, dry_run=False)
+
+    op = history.list_operations(tmp_path)[0]
+
+    def denied(self, *a, **k):
+        raise PermissionError(13, "Отказано в доступе")
+
+    monkeypatch.setattr(Path, "unlink", denied)
+    monkeypatch.setattr(Path, "write_text", denied)
+
+    notes = history.undo_operation(op, cfg)
+
+    assert src.exists(), "файлы всё-таки вернулись"
+    assert notes, "о нетронутом журнале не сказано ни слова"
+    assert any("журнал" in why for _, why in notes), notes
+
+
 def test_undo_operation_restores_and_removes_log(tmp_path):
     cfg = make_config(tmp_path)
     src = tmp_path / "a.pdf"

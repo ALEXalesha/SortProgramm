@@ -1603,6 +1603,80 @@ class _Boom:
         raise OSError(self.message)
 
 
+def test_report_names_the_place_the_file_actually_lies(tmp_path, monkeypatch):
+    """Отчёт отправлял искать файл там, где его нет.
+
+    Файл `Others` занимает путь, который надо создать для него же, поэтому
+    `apply` отводит его в сторону под именем `Others (1)`. Если после этого
+    перемещение упало, файл возвращают назад — а не вышло и это (диск сняли,
+    файл захватила другая программа), он так и остаётся лежать `Others (1)`.
+
+    В списке «Не переехали» при этом стояло исходное имя. Человек читает про
+    `Others`, идёт в проводник и не находит там ничего: имя, под которым файл
+    лежит на самом деле, в отчёте не названо ни разу — а придумала его сама
+    программа. Откат про это место говорит правду давно («отведённый в сторону
+    лежит уже не по тому пути, который записан в журнале»); здесь отчитывался
+    тот, кто при перемещении не присутствовал.
+    """
+    import shutil
+
+    real = shutil.move
+
+    def flaky(src, dst):
+        # Всё, что трогает отведённый в сторону файл, падает: и перемещение
+        # в цель, и попытка вернуть его назад.
+        if str(src).endswith("Others (1)"):
+            raise OSError("диск отвалился")
+        return real(src, dst)
+
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "Others", "это файл, а не папка")
+    config = make_config(downloads)
+    moves = build_plan(config)
+    monkeypatch.setattr(shutil, "move", flaky)
+
+    result = apply(moves, config, dry_run=False)
+
+    assert result.moved == 0
+    assert (downloads / "Others (1)").is_file(), "файл и правда лежит в стороне"
+    named = result.errors[0][0]
+    assert named.endswith("Others (1)"), (
+        f"отчёт зовёт искать файл там, где его нет: {named}")
+
+
+def test_failed_move_puts_the_file_taken_aside_back(tmp_path, monkeypatch):
+    """Отведённый в сторону файл не возвращался никогда — мешала своя же папка.
+
+    `mkdir` для `Others/Misc` создаёт заодно и `Others`, то есть занимает
+    папкой ровно то имя, куда надо вернуть файл. Проверка «исходный путь
+    свободен» после этого ложна всегда, и ветка возврата стояла мёртвой — ровно
+    в том случае, ради которого её и писали. Неудачная уборка оставляла на
+    диске `Others (1)` и пустой каркас из двух папок, которых никто не просил.
+    """
+    import shutil
+
+    real = shutil.move
+
+    def flaky(src, dst):
+        if str(dst).endswith("Misc\\Others") or str(dst).endswith("Misc/Others"):
+            raise OSError("файл занят другой программой")
+        return real(src, dst)
+
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "Others", "это файл, а не папка")
+    config = make_config(downloads)
+    moves = build_plan(config)
+    monkeypatch.setattr(shutil, "move", flaky)
+
+    result = apply(moves, config, dry_run=False)
+
+    assert result.moved == 0
+    assert (downloads / "Others").is_file(), "файл не вернулся на своё место"
+    assert (downloads / "Others").read_text(encoding="utf-8") == "это файл, а не папка"
+    assert not (downloads / "Others (1)").exists()
+    assert result.errors[0][0].endswith("Others")
+
+
 def test_failed_move_is_not_reported_as_moved_under_another_name(tmp_path, monkeypatch):
     """Отчёт называл один и тот же файл и непереехавшим, и переехавшим.
 
@@ -3392,6 +3466,105 @@ def test_journal_goes_away_when_a_whole_chain_came_back(tmp_path):
         encoding="utf-8") == "тут про клип"
     assert not op.log_path.exists(), "журнал остался, хотя вернулись все"
     assert list_operations(downloads) == []
+
+
+def test_undo_waits_for_the_folder_a_later_sort_put_on_its_place(tmp_path):
+    """Файл возвращался как `Медиа (1)` — насовсем и без единой записи об этом.
+
+    Расклад тот же, ради которого заведена вся эта возня с историей: прибрались,
+    поправили правила, нажали «Переразложить старое», и в «🕘 Истории» две
+    строки. Человек выбирает нижнюю.
+
+    Файл `Медиа` без расширения уехал первой сортировкой в `Others/Misc`. Его
+    исходное место к моменту отката занято папкой `Медиа` — её создала ВТОРАЯ
+    сортировка, когда унесла туда `клип.mp4`. Файл и папка под одним именем не
+    уживаются, и откат клал файл рядом номером, а запись из журнала стирал:
+    «с этой записью закончили».
+
+    Закончили неправдой. Отменив следом верхнюю строку, человек получает пустую
+    папку `Медиа`, которую уборка тут же сносит, — то есть место освобождается,
+    а файл так и остаётся `Медиа (1)`, и записи, по которой его можно было бы
+    вернуть, больше нет. Оговорку откат называл честно, но чинить её человеку
+    нечем: у него на руках переименованный файл и пустая история.
+
+    Папку эту создаёт сама программа и сама же уберёт. Значит откат не бессилен,
+    а всего лишь рано пришёл: запись остаётся в журнале, попытку надо повторить
+    после отката верхней строки — ровно то, что программа делает с любым другим
+    файлом, который не лёг туда, откуда его унесли.
+    """
+    downloads = tmp_path / "загрузки"
+    config = make_config(downloads)
+    touch(downloads / "Медиа", "это файл, а не папка")
+    apply(build_plan(config), config, dry_run=False)
+    assert (downloads / "Others" / "Misc" / "Медиа").is_file()
+    assert not (downloads / "Медиа").exists(), "папку никто не создавал"
+
+    # вторая сортировка занимает освободившееся имя папкой «Медиа»
+    touch(downloads / "клип.mp4")
+    apply(build_plan(config), config, dry_run=False)
+    assert (downloads / "Медиа" / "Videos" / "клип.mp4").is_file()
+
+    older = list_operations(downloads)[-1]
+    notes = undo_operation(older, config)
+
+    assert notes, "откат промолчал о том, что вернуть файл не вышло"
+    assert not (downloads / "Медиа (1)").exists(), "файл переименован насовсем"
+    assert (downloads / "Others" / "Misc" / "Медиа").is_file(), "файл сдвинут зря"
+    assert older.log_path.exists(), "журнал стёрт — повторить откат больше нечем"
+
+    # отменяем верхнюю строку, папка уходит — и повтор возвращает файл домой
+    undo_operation(list_operations(downloads)[0], config)
+    assert (downloads / "клип.mp4").is_file()
+    assert undo_operation(list_operations(downloads)[0], config) == []
+    assert (downloads / "Медиа").is_file()
+    assert (downloads / "Медиа").read_text(encoding="utf-8") == "это файл, а не папка"
+    assert list_operations(downloads) == []
+
+
+def test_undo_still_steps_aside_for_a_namesake_file(tmp_path):
+    """На исходном пути снова ФАЙЛ с тем же именем — ждать нечего.
+
+    Ждать имеет смысл только папки: её создала программа и она же уберёт, когда
+    та опустеет. Тёзка-файл (скачали второй `Медиа`, пока сортировка лежала в
+    истории) не денется никуда, и отказ вернуть означал бы, что файл не
+    вернётся вовсе. Отличать одно от другого по имени мало — надо смотреть, что
+    там лежит на самом деле.
+    """
+    downloads = tmp_path / "загрузки"
+    config = make_config(downloads)
+    touch(downloads / "Медиа", "старый")
+    apply(build_plan(config), config, dry_run=False)
+    touch(downloads / "Медиа", "новый, скачали потом")
+
+    op = list_operations(downloads)[0]
+    notes = undo_operation(op, config)
+
+    assert (downloads / "Медиа").read_text(encoding="utf-8") == "новый, скачали потом"
+    assert (downloads / "Медиа (1)").read_text(encoding="utf-8") == "старый"
+    assert notes and "занят" in notes[0][1]
+    assert not op.log_path.exists(), "файл вернулся — запись держать незачем"
+
+
+def test_undo_still_steps_aside_for_a_folder_the_user_made(tmp_path):
+    """Чужая папка на исходном пути — дело другое: ждать нечего, кладём рядом.
+
+    Папку `клип.mp4` создал человек, программа её не уберёт никогда, и отказ
+    возвращать файл означал бы, что он не вернётся вовсе. Отличать одно от
+    другого приходится по имени: `Медиа` — каркас программы, `клип.mp4` — нет.
+    """
+    downloads = tmp_path / "загрузки"
+    config = make_config(downloads)
+    touch(downloads / "клип.mp4", "видео")
+    apply(build_plan(config), config, dry_run=False)
+    (downloads / "клип.mp4").mkdir()
+    touch(downloads / "клип.mp4" / "чужое.txt")
+
+    op = list_operations(downloads)[0]
+    notes = undo_operation(op, config)
+
+    assert (downloads / "клип (1).mp4").read_text(encoding="utf-8") == "видео"
+    assert notes and "занят" in notes[0][1]
+    assert not op.log_path.exists(), "файл вернулся — запись держать незачем"
 
 
 def test_unreadable_journal_is_not_dropped_from_history(tmp_path):

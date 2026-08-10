@@ -708,8 +708,23 @@ class GlassWindow(QWidget):
                 "Положи ключ в файл deepseek_key.txt рядом с программой\n"
                 "или задай переменную окружения DEEPSEEK_API_KEY.")
             return
-        files = scan(
-            self.config.downloads_path, self.config, deep=self.resort.isChecked())
+        # Папки, которые не удалось прочитать, забираем тем же списком, каким их
+        # забирает план. Обход умеет о них говорить, `build_plan` доносит их до
+        # трёх интерфейсов — а эта кнопка зовёт обход напрямую, четвёртым
+        # читателем, и жалобы просто не брала: починку до неё не донесли.
+        #
+        # Ноль тут врёт злее, чем в плане. «План готов: 0 шт.» хотя бы называет
+        # себя планом, а «Нечего разбирать» значит «всё уже разложено» — и это
+        # про папку, полную файлов, которую окно не смогло открыть. Соседняя
+        # кнопка на той же папке в ту же секунду говорит «Не прочитано папок: 1».
+        unread: list[str] = []
+        files = scan(self.config.downloads_path, self.config,
+                     deep=self.resort.isChecked(), problems=unread)
+        # В строку — счёт, в подсказку мышью — сами имена: так же, как у плана и
+        # у списка непрочитанных журналов в «🕘 Истории».
+        self.status.setToolTip("\n".join(unread))
+        unread_tail = (f"   Не прочитано папок: {len(unread)} — их файлы в "
+                       "запрос не попали." if unread else "")
         # Одно имя — один вопрос. Ключ в overrides.json это имя без пути, поэтому
         # второй `клип.mp4` из соседней папки не добавляет вопросу ничего: ответ
         # будет тот же и распространится на оба файла. Раньше повторы уходили в
@@ -738,8 +753,8 @@ class GlassWindow(QWidget):
         reasons = ", ".join(skipped)
         if not names:
             self.status.setText(
-                f"Нечего разбирать: {reasons}." if reasons
-                else "Нечего разбирать.")
+                (f"Нечего разбирать: {reasons}." if reasons
+                 else "Нечего разбирать.") + unread_tail)
             return
         cats = list(self.config.categories.keys()) + [self.config.fallback_category]
         # Сколько имён ушло в запрос. Ответ приходит один, без вопроса, а
@@ -747,7 +762,8 @@ class GlassWindow(QWidget):
         self._ai_asked = len(names)
         self.ai_btn.setEnabled(False)
         tail = f" ({reasons} — не спрашиваем)" if reasons else ""
-        self.status.setText(f"Спрашиваю DeepSeek по {len(names)} именам…{tail}")
+        self.status.setText(
+            f"Спрашиваю DeepSeek по {len(names)} именам…{tail}{unread_tail}")
         self._worker = _AiWorker(
             names, cats, key, self.config.category_hints,
             self.config.fallback_category)
