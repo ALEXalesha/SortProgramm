@@ -13,7 +13,33 @@ def _is_ignored(name: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(name.lower(), p.lower()) for p in patterns)
 
 
-def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
+def _unreadable(folder: Path, exc: OSError, problems: list[str] | None) -> None:
+    """Жалоба на папку, которую не удалось прочитать.
+
+    Пропускать такую папку по-прежнему приходится: падать посреди обхода
+    нельзя, а ронять окно стеком — тем более. Но молчать о ней значит выдать
+    неверный ответ с уверенным видом. Файлов в ней сколько угодно, а в плане
+    их нет — и «План готов: 0 шт.» становится неотличим от прибранных
+    загрузок. Ровно тот исход, который README трижды называет ошибкой:
+    для ОТСУТСТВУЮЩЕЙ папки все три интерфейса давно говорят «Папка не
+    найдена», а для папки, которая на месте и не читается, не говорил никто.
+
+    Причины самые обычные и все временные: права на сетевой папке, отключённый
+    диск, вынутая флешка, каталог, занятый другой программой. Временные — то
+    есть починка сводится к «воткни флешку обратно», если знать, что чинить.
+    """
+    if problems is not None:
+        problems.append(
+            f"{folder}: папку не удалось прочитать ({exc}). Её файлы в план "
+            "не попали — в этом прогоне программа про них не знает.")
+
+
+def scan(
+    root: str | Path,
+    config: Config,
+    deep: bool = True,
+    problems: list[str] | None = None,
+) -> list[Path]:
     """Файлы для сортировки из корня папки.
 
     deep=True  — файлы корня + рекурсивно из папок, которые программа создала
@@ -51,11 +77,12 @@ def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
     visited = {_real(root)}
 
     # Прочитать папку может не выйти: права, отключённый сетевой диск, вынутая
-    # флешка. Внутри управляемых папок этот случай уже обработан
-    # (`_walk_managed`), и в корне он ничем не лучше — окно падать не должно.
+    # флешка. Окно падать не должно, поэтому папку пропускаем — но говорим о
+    # ней вслух (`_unreadable`), иначе её файлы исчезают из плана молча.
     try:
         entries = sorted(root.iterdir())
-    except OSError:
+    except OSError as exc:
+        _unreadable(root, exc, problems)
         return found
 
     for entry in entries:
@@ -63,12 +90,14 @@ def scan(root: str | Path, config: Config, deep: bool = True) -> list[Path]:
             if not _is_ignored(entry.name, config.ignore):
                 found.append(entry)
         elif deep and entry.is_dir() and folder_key(entry.name) in enterable:
-            found.extend(_walk_managed(entry, config, visited))
+            found.extend(_walk_managed(entry, config, visited, problems))
 
     return found
 
 
-def is_extension_folder(folder: Path, config: Config) -> bool:
+def is_extension_folder(
+    folder: Path, config: Config, problems: list[str] | None = None
+) -> bool:
     """Подпапка внешней папки 3D, которую создала сама программа.
 
     Своей она считается двумя способами, и хватает любого.
@@ -103,7 +132,11 @@ def is_extension_folder(folder: Path, config: Config) -> bool:
         return True
     try:
         entries = folder.iterdir()
-    except OSError:
+    except OSError as exc:
+        # Не прочитали — значит и решить не можем, своя папка или чужая.
+        # Считаем чужой (осторожнее), но говорим об этом: молча папка
+        # расширений выпадает из переразложения целиком.
+        _unreadable(folder, exc, problems)
         return False
     for entry in entries:
         if entry.is_file() and extension_of(entry.name) == key:
@@ -111,7 +144,12 @@ def is_extension_folder(folder: Path, config: Config) -> bool:
     return False
 
 
-def scan_3d(root: str | Path, config: Config, deep: bool = False) -> list[Path]:
+def scan_3d(
+    root: str | Path,
+    config: Config,
+    deep: bool = False,
+    problems: list[str] | None = None,
+) -> list[Path]:
     """Файлы внешней папки 3D (All_3d).
 
     deep=False — только корень: файлы, которые туда положили руками или
@@ -131,16 +169,17 @@ def scan_3d(root: str | Path, config: Config, deep: bool = False) -> list[Path]:
     папке этот режим просто ничего не находит.
     """
     root = Path(root)
-    found = scan(root, config, deep=False)
+    found = scan(root, config, deep=False, problems=problems)
     if not deep or not root.is_dir():
         return found
     try:
         entries = sorted(root.iterdir())
     except OSError:
+        # Про сам корень уже сказал `scan` строкой выше — второй раз незачем.
         return found
     for entry in entries:
-        if entry.is_dir() and is_extension_folder(entry, config):
-            found.extend(scan(entry, config, deep=False))
+        if entry.is_dir() and is_extension_folder(entry, config, problems):
+            found.extend(scan(entry, config, deep=False, problems=problems))
     return found
 
 
@@ -156,7 +195,12 @@ def _real(path: Path) -> Path:
         return path
 
 
-def _walk_managed(folder: Path, config: Config, visited: set[Path]) -> list[Path]:
+def _walk_managed(
+    folder: Path,
+    config: Config,
+    visited: set[Path],
+    problems: list[str] | None = None,
+) -> list[Path]:
     """Файлы внутри управляемой папки. Вглубь — только по своим папкам.
 
     Своя папка — та, чьё имя есть в `managed_folders`: категория или тип. Всё
@@ -195,7 +239,8 @@ def _walk_managed(folder: Path, config: Config, visited: set[Path]) -> list[Path
         visited.add(real)
         try:
             entries = list(current.iterdir())
-        except OSError:
+        except OSError as exc:
+            _unreadable(current, exc, problems)
             continue
         for entry in entries:
             if entry.is_dir():

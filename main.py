@@ -68,9 +68,16 @@ def run_cli(path: str | None, do_apply: bool, to_3d: bool | None, deep: bool) ->
 
     # deep=False — только корень загрузок; deep=True — переразложить и то,
     # что программа уже разложила по своим папкам. Плюс разбор All_3d.
-    moves = build_plan(config, send_3d_external=to_3d, deep=deep)
+    #
+    # Папки, которые не удалось прочитать, приходят отдельным списком. Сказать
+    # о них надо до счёта, а не после: ноль в консоли значит «прибрано», и без
+    # этих строк отличить его от «половину папок не открыли» нечем.
+    unread: list[str] = []
+    moves = build_plan(config, send_3d_external=to_3d, deep=deep, problems=unread)
 
     print(f"Папка: {config.downloads_path}")
+    for problem in unread:
+        print(f"  ! {problem}")
     print(f"Найдено к перемещению: {len(moves)}\n")
     root = Path(config.downloads_path)
     for mv in moves:

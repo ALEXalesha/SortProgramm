@@ -182,3 +182,38 @@ def test_typed_path_refreshes_the_table(window):
     win.path_edit.editingFinished.emit()
 
     assert [mv.src.name for mv in win.moves] == ["отчёт.pdf"]
+
+
+def test_window_says_when_a_folder_could_not_be_read(window, monkeypatch):
+    """«План готов: 0 шт.» на нечитаемой папке — это неверный ответ уверенным тоном.
+
+    Про ненайденную папку окно говорит давно («Папка не найдена»), а папка,
+    которая на месте и не открывается — права, отключённый сетевой диск,
+    вынутая флешка, — давала обычный ноль, неотличимый от прибранных загрузок.
+    """
+    from pathlib import Path
+
+    win, downloads = window
+    real = Path.iterdir
+
+    def guard(self):
+        if self == downloads:
+            raise PermissionError(13, "Отказано в доступе")
+        return real(self)
+
+    monkeypatch.setattr(Path, "iterdir", guard)
+
+    win.preview()
+
+    assert win.moves == []
+    assert "не прочитано" in win.status.text().lower(), win.status.text()
+    assert str(downloads) in win.status.toolTip()
+
+
+def test_window_stays_quiet_on_a_readable_folder(window):
+    """Обычная папка подсказку не рождает — иначе строка состояния зашумится."""
+    win, _ = window
+    win.preview()
+
+    assert "не прочитано" not in win.status.text().lower()
+    assert win.status.toolTip() == ""

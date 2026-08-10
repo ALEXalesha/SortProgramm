@@ -296,3 +296,35 @@ def test_cli_does_not_cut_the_report_short(tmp_path, monkeypatch, capsys):
 
     assert "…и ещё" not in out
     assert "файл11.dat" in out
+
+
+def test_cli_names_the_folder_it_could_not_read(tmp_path, monkeypatch, capsys):
+    """Нечитаемая папка давала «Найдено к перемещению: 0» и ни слова больше.
+
+    Ноль в консоли значит «прибрано», и отличить его от «половину папок не
+    открыли» было нечем. Про ненайденную папку CLI говорит давно — про папку,
+    которая на месте и не читается, молчал.
+    """
+    from pathlib import Path
+
+    downloads = tmp_path / "загрузки"
+    downloads.mkdir()
+    (downloads / "клип.mp4").write_text("x", encoding="utf-8")
+    cfg_path = write_config(tmp_path, {"downloads_path": str(downloads)})
+    monkeypatch.setattr(main, "CONFIG_PATH", cfg_path)
+
+    real = Path.iterdir
+
+    def guard(self):
+        if self == downloads:
+            raise PermissionError(13, "Отказано в доступе")
+        return real(self)
+
+    monkeypatch.setattr(Path, "iterdir", guard)
+
+    main.run_cli(None, do_apply=False, to_3d=None, deep=False)
+
+    out = capsys.readouterr().out
+    assert "Найдено к перемещению: 0" in out
+    assert str(downloads) in out
+    assert "не удалось прочитать" in out, out

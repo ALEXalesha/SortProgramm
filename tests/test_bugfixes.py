@@ -2853,6 +2853,60 @@ def test_file_named_like_a_category_does_not_block_the_whole_run(tmp_path):
     assert (downloads / "Others" / "Misc" / "Медиа").is_file()
 
 
+def test_file_blocking_the_3d_folder_is_named_in_the_report(tmp_path):
+    """Файл `gcode` в корне All_3d морозил все модели этого расширения навсегда.
+
+    В загрузках такой случай разобран давно: файл `Медиа` без расширения сам
+    стоит в плане (он едет в `Others/Misc`), и `_vacate_first` пропускает его
+    вперёд. Во внешней папке 3D та же беда лечится иначе, потому что виновника
+    в плане нет и быть не может: `plan_3d_folder` файлы без расширения не
+    трогает нарочно — класть их некуда, подпапку выбирает расширение.
+
+    Значит `All_3d/gcode` не создать ни в этот раз, ни в следующий: виновник
+    остаётся лежать, и каждая уборка снова роняет все `.gcode` до одного. Само
+    оно не пройдёт никогда — в отличие от загрузок, где со следующего раза всё
+    налаживалось само.
+
+    Отчёт при этом называл `[WinError 183]` и путь папки, которую не создать.
+    Связать это с файлом, лежащим рядом, нельзя: у папки и у файла одно и то же
+    имя, и строка выглядит так, будто папка уже есть и потому мешает.
+
+    Двигать виновника сами не вправе — его нет в таблице плана, а в этой
+    программе не двигают того, чего не показали. Поэтому называем его поимённо:
+    починка занимает десять секунд, если знать, что чинить.
+    """
+    downloads = tmp_path / "загрузки"
+    all_3d = tmp_path / "All_3d"
+    touch(downloads / "деталь.gcode")
+    touch(all_3d / "gcode", "файл, а не папка")
+    config = make_config(downloads)
+    config.external_3d = {"enabled": True, "path": str(all_3d),
+                          "extensions": ["gcode"]}
+
+    result = apply(build_plan(config, send_3d_external=True), config, dry_run=False)
+
+    assert result.moved == 0
+    assert len(result.errors) == 1
+    why = result.errors[0][1]
+    assert "gcode" in why
+    assert "занят" in why or "файл" in why, why
+    assert str(all_3d / "gcode") in why, "виновник не назван поимённо"
+
+
+def test_blocked_folder_message_only_appears_when_a_file_is_in_the_way(tmp_path):
+    """Обычная неудача перемещения объясняется по-прежнему своими словами."""
+    downloads = tmp_path / "загрузки"
+    config = make_config(downloads)
+    missing = downloads / "клип.mp4"
+    downloads.mkdir(parents=True, exist_ok=True)
+
+    result = apply([Move(missing, downloads / "Медиа" / "Videos" / "клип.mp4")],
+                   config, dry_run=False)
+
+    assert len(result.errors) == 1
+    assert "нет файла" in result.errors[0][1]
+
+
 def test_ordinary_plan_keeps_its_order(tmp_path):
     """Перестановка касается только виновников — остальные идут как шли."""
     downloads = tmp_path / "загрузки"
@@ -3298,6 +3352,69 @@ def test_journal_goes_away_when_the_files_did_come_back(tmp_path):
     assert list_operations(downloads) == []
 
 
+def test_journal_goes_away_when_a_whole_chain_came_back(tmp_path):
+    """Откат цепочки «уступи дорогу» оставлял журнал в истории навсегда.
+
+    Расклад самый обычный, ради него и заведён `planner._dedup`: в корне лежит
+    новая `заметка.txt`, которой место в `Others/Documents`, а лежащая там
+    тёзка по содержимому уезжает в «Медиа». Сортировка проходит верно, откат
+    возвращает обоих на свои места — а запись из «🕘 Истории» не исчезает.
+
+    Спрашивал «вернулся ли файл» тот, кто при откате не присутствовал, и
+    спрашивал у путей: «по новому пути пусто» значит «вернулся». Но по новому
+    пути к этому времени стоит тёзка, которую откат туда же и вернул, — путь
+    занят по праву и совсем другим файлом. Занятость пути не значит ничего:
+    имена в этой программе повторяются, на том и держится вся возня с
+    номерами ` (1)`.
+
+    Последствие хуже застрявшей строки в списке. Второй откат по ней берёт
+    файл, который лежит по этому пути СЕЙЧАС, и уносит его в корень под именем
+    `заметка (1).txt` — то есть ломает раскладку, только что восстановленную
+    первым откатом, и делает это на кнопке, которая обещает вернуть всё как
+    было.
+    """
+    downloads = tmp_path / "загрузки"
+    config = make_config(downloads)
+    touch(downloads / "заметка.txt", "новая, из корня")
+    # Тёзка уезжает в «Медиа» по слову в содержимом — имена у них одинаковые.
+    touch(downloads / "Others" / "Documents" / "заметка.txt", "тут про клип")
+
+    apply(build_plan(config, deep=True), config, dry_run=False)
+    assert (downloads / "Others" / "Documents" / "заметка.txt").read_text(
+        encoding="utf-8") == "новая, из корня"
+    assert (downloads / "Медиа" / "Documents" / "заметка.txt").is_file()
+
+    op = list_operations(downloads)[0]
+    assert undo_operation(op, config) == []
+
+    assert (downloads / "заметка.txt").read_text(encoding="utf-8") == "новая, из корня"
+    assert (downloads / "Others" / "Documents" / "заметка.txt").read_text(
+        encoding="utf-8") == "тут про клип"
+    assert not op.log_path.exists(), "журнал остался, хотя вернулись все"
+    assert list_operations(downloads) == []
+
+
+def test_unreadable_journal_is_not_dropped_from_history(tmp_path):
+    """Журнал, испортившийся между списком и откатом, не должен исчезать.
+
+    Откат в этом случае не делает ничего и говорит об этом оговоркой. Стереть
+    после этого запись значит потерять единственное место, где записано, откуда
+    файлы взялись, — при том, что сам файл чинится в редакторе за минуту.
+    """
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "клип.mp4")
+    config = make_config(downloads)
+    apply(build_plan(config), config, dry_run=False)
+
+    op = list_operations(downloads)[0]
+    op.log_path.write_text("{ оборвалось", encoding="utf-8")
+
+    notes = undo_operation(op, config)
+
+    assert notes, "откат промолчал о нечитаемом журнале"
+    assert op.log_path.exists(), "нечитаемый журнал стёрт вместе с записью"
+
+
 # --- обновление старой установки ---
 
 
@@ -3563,3 +3680,118 @@ def test_all_batches_through_says_nothing(tmp_path):
         problems=problems)
 
     assert problems == []
+
+
+# --- папка, которую не удалось прочитать ---
+
+
+def deny_reading(monkeypatch, denied):
+    """Делает папку нечитаемой так же, как это делают права или снятый диск."""
+    real = Path.iterdir
+
+    def guard(self):
+        if self == Path(denied):
+            raise PermissionError(13, "Отказано в доступе")
+        return real(self)
+
+    monkeypatch.setattr(Path, "iterdir", guard)
+
+
+def test_unreadable_downloads_root_is_not_silent(tmp_path, monkeypatch):
+    """Нечитаемый корень загрузок давал «План готов: 0 шт.» и ни слова больше.
+
+    Ровно тот исход, который README трижды называет ошибкой, — только
+    починен он был для ОТСУТСТВУЮЩЕЙ папки: там все три интерфейса говорят
+    «Папка не найдена». Папка на месте, `is_dir()` отвечает «да», а прочитать
+    её не выходит — права, отключившийся сетевой диск, вынутая флешка, — и
+    ноль в плане становится неотличим от прибранных загрузок.
+
+    Хуже того, ноль тут врёт активнее, чем при опечатке в пути: человек видит
+    свою настоящую папку, полную файлов, и «0 шт.» рядом с ней.
+    """
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "клип.mp4")
+    config = make_config(downloads)
+    deny_reading(monkeypatch, downloads)
+
+    problems = []
+    files = scan(downloads, config, deep=True, problems=problems)
+
+    assert files == []
+    assert len(problems) == 1, f"о нечитаемой папке промолчали: {problems}"
+    assert str(downloads) in problems[0]
+    assert "Отказано" in problems[0]
+
+
+def test_unreadable_managed_folder_is_not_silent(tmp_path, monkeypatch):
+    """Переразложение молча теряло целую свою папку.
+
+    Корень читается, файлы в нём находятся, а `Медиа` не открылась — и её
+    содержимое просто не участвует в плане. Снаружи это выглядит как «там
+    уже всё разложено верно».
+    """
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "отчёт.pdf")
+    touch(downloads / "Медиа" / "Videos" / "клип.mp4")
+    config = make_config(downloads)
+    deny_reading(monkeypatch, downloads / "Медиа")
+
+    problems = []
+    files = scan(downloads, config, deep=True, problems=problems)
+
+    assert [f.name for f in files] == ["отчёт.pdf"]
+    assert len(problems) == 1, f"о нечитаемой папке промолчали: {problems}"
+    assert str(downloads / "Медиа") in problems[0]
+
+
+def test_readable_folders_say_nothing(tmp_path):
+    """Обычная папка жалоб не рождает."""
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "клип.mp4")
+    touch(downloads / "Медиа" / "Videos" / "другой.mp4")
+    problems = []
+
+    scan(downloads, make_config(downloads), deep=True, problems=problems)
+
+    assert problems == []
+
+
+def test_build_plan_carries_the_complaint_up(tmp_path, monkeypatch):
+    """Жалоба обхода должна доезжать до того, кто строит план.
+
+    Без этого её некому показать: план строят все три интерфейса, а `scan`
+    они зовут через `build_plan`.
+    """
+    downloads = tmp_path / "загрузки"
+    touch(downloads / "клип.mp4")
+    config = make_config(downloads)
+    deny_reading(monkeypatch, downloads)
+
+    problems = []
+    moves = build_plan(config, deep=True, problems=problems)
+
+    assert moves == []
+    assert problems and str(downloads) in problems[0]
+
+
+def test_unreadable_extension_folder_in_3d_is_not_silent(tmp_path, monkeypatch):
+    """Папка расширений внутри All_3d, которую не прочитать, тоже не молчит.
+
+    Прочитать её надо дважды: чтобы решить, своя ли она (`is_extension_folder`
+    ищет файл-свидетель), и чтобы собрать из неё файлы. Оба отказа кончались
+    одинаково — папка объявлялась чужой и в переразложении не участвовала.
+    """
+    downloads = tmp_path / "загрузки"
+    all_3d = tmp_path / "All_3d"
+    touch(all_3d / "gcode" / "деталь.gcode")
+    downloads.mkdir(parents=True, exist_ok=True)
+    config = make_config(downloads)
+    config.external_3d = {"enabled": True, "path": str(all_3d),
+                          "extensions": ["stl"]}
+    deny_reading(monkeypatch, all_3d / "gcode")
+
+    problems = []
+    build_plan(config, send_3d_external=True, deep=True, problems=problems)
+
+    assert problems, "о нечитаемой папке расширений промолчали"
+    assert any(str(all_3d / "gcode") in p for p in problems), problems

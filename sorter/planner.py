@@ -267,6 +267,7 @@ def build_plan(
     config: Config,
     send_3d_external: bool = False,
     deep: bool = False,
+    problems: list[str] | None = None,
 ) -> list[Move]:
     """Полный план: загрузки + внешняя папка All_3d (всегда по расширениям).
 
@@ -288,10 +289,17 @@ def build_plan(
     переразложении — ровно как папки категорий в загрузках. Раньше внутрь
     All_3d не заглядывали никогда, и модель, однажды уехавшая не в ту подпапку,
     оставалась там навсегда: «Переразложить старое» до неё не доходило.
+
+    `problems` — тот же список жалоб, каким отвечают разбор настроек и чтение
+    журналов отмены. Сюда попадают папки, которые не удалось прочитать
+    (`scanner._unreadable`): их файлы в план не попали, и без этой строки ноль
+    в плане неотличим от прибранных загрузок. План строят все три интерфейса и
+    зовут для этого именно `build_plan` — значит и жалоба должна выходить
+    отсюда, а не оставаться в обходе.
     """
     taken: set[Path] = set()
 
-    downloads = scan(config.downloads_path, config, deep=deep)
+    downloads = scan(config.downloads_path, config, deep=deep, problems=problems)
     moves = plan(downloads, config, send_3d_external=send_3d_external, taken=taken)
 
     external_path = external_3d_path(config)
@@ -300,7 +308,8 @@ def build_plan(
         # файлы. Без этого фильтра один файл попал бы в план дважды: первое
         # перемещение прошло бы, второе упало с «нет файла».
         planned = {mv.src for mv in moves}
-        loose = [f for f in scan_3d(external_path, config, deep=deep)
+        loose = [f for f in scan_3d(external_path, config, deep=deep,
+                                    problems=problems)
                  if f not in planned]
         moves += plan_3d_folder(loose, config, taken=taken)
 

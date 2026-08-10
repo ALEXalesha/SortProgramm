@@ -535,8 +535,19 @@ class GlassWindow(QWidget):
             self.moves = []
             self.status.setText("Папка не найдена — укажи существующий путь.")
             return
+        # Папки, которые не удалось прочитать: права, отключённый сетевой диск,
+        # вынутая флешка. Их файлы в план не попали, и без этой строки «План
+        # готов: 0 шт.» неотличим от прибранных загрузок — тот самый исход, ради
+        # которого окно вообще научили говорить «Папка не найдена». Здесь он
+        # тише: папка на месте, путь верный, а половины файлов в плане нет.
+        #
+        # В строку — счёт, в подсказку мышью — сами имена: строка состояния
+        # короткая, а чинить всё равно идут в проводник. Так же устроен и
+        # список непрочитанных журналов в «🕘 Истории».
+        unread: list[str] = []
         self.moves = build_plan(
-            self.config, send_3d_external=self.to_3d.isChecked(), deep=deep)
+            self.config, send_3d_external=self.to_3d.isChecked(), deep=deep,
+            problems=unread)
         self.table.setRowCount(len(self.moves))
         for r, mv in enumerate(self.moves):
             self.table.setItem(r, 0, QTableWidgetItem(rel_to(mv.src, root)))
@@ -556,6 +567,10 @@ class GlassWindow(QWidget):
         # программы.
         warning = external_3d_warning(self.config, self.to_3d.isChecked())
         tail = f"   {warning}" if warning else ""
+        if unread:
+            tail += (f"   Не прочитано папок: {len(unread)} — их файлы в план "
+                     "не попали.")
+        self.status.setToolTip("\n".join(unread))
         self.status.setText(f"План готов: {len(self.moves)} шт.{tail}")
 
     def _save_overrides(self) -> str:

@@ -154,10 +154,17 @@ class SorterApp:
 
         # Галочка «Переразложить старое» включает разбор папок, которые программа
         # создала сама. Чужие папки не трогаются ни в каком режиме.
+        #
+        # Папки, которые не удалось прочитать, приходят отдельным списком: без
+        # них «План готов: 0 шт.» неотличим от прибранных загрузок. Окно PyQt и
+        # консоль говорят об этом же — расхождение между интерфейсами тут
+        # обесценивает проверку правил через любой из них.
+        unread: list[str] = []
         self.moves = build_plan(
             self.config,
             send_3d_external=self.to_3d.get(),
             deep=self.resort.get(),
+            problems=unread,
         )
         self.tree.delete(*self.tree.get_children())
         root = Path(self.config.downloads_path)
@@ -170,6 +177,9 @@ class SorterApp:
         # неотличимо от исправной работы. Текст общий с окном PyQt и консолью.
         warning = external_3d_warning(self.config, self.to_3d.get())
         tail = f"   {warning}" if warning else ""
+        if unread:
+            tail += (f"   Не прочитано папок: {len(unread)} — их файлы в план "
+                     "не попали.")
         self.status.set(f"План готов: {len(self.moves)} шт. к перемещению.{tail}")
 
     def do_apply(self):
