@@ -3575,6 +3575,71 @@ def test_healthy_type_map_stays_quiet(tmp_path):
     assert [p for p in problems if "type_map" in p] == []
 
 
+def test_rule_that_argues_with_a_pattern_is_named(tmp_path):
+    """Ручное правило поверх шаблона уводило файл молча.
+
+    Шаблон узнаёт файл по имени наверняка: `Снимок экрана 2026-05-28 185311.png`
+    — это скриншот, спорить не о чем. Ручное правило стоит выше шаблонов и слов,
+    поэтому уводит такой файл куда угодно, и заметить это можно только сравнив
+    «куда легло» с «что сказал бы шаблон».
+
+    Нашлось на настоящей папке: пять файлов — четыре с датой в имени и один
+    прямо со словом «Снимок экрана» — лежали в «Дизайне», а в «Скриншотах»
+    оставалось два файла. Писал эти правила не человек: их насыпала кнопка
+    «✨ИИ», пока была. Она отвечала за файл, про который её спросили, и ни разу
+    не спрашивала, есть ли у программы собственное мнение.
+    """
+    config_path, _ = make_rules(tmp_path, {
+        "patterns": {"Скриншоты": ["^(снимок экрана|screenshot)"]},
+        "managed_folders": ["Учёба", "Медиа", "Скриншоты", "Дизайн",
+                            "Documents", "Images", "Others", "Misc"],
+    })
+    (tmp_path / "overrides.json").write_text(json.dumps({
+        "Снимок экрана 2026-05-28 185311.png": "Дизайн",
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(config_path)
+
+    assert config.problems == [], "раскладка не сломана, тревожить незачем"
+    assert len(config.notices) == 1, config.notices
+    said = config.notices[0]
+    assert "Снимок экрана 2026-05-28 185311.png" in said
+    assert "Скриншоты" in said and "Дизайн" in said
+    # Правило всё равно работает: сказать — не значит отменить.
+    assert config.overrides["Снимок экрана 2026-05-28 185311.png"] == "Дизайн"
+
+
+def test_rule_agreeing_with_its_pattern_is_not_named(tmp_path):
+    """Правило, ведущее туда же, куда шаблон, — не спор, а подтверждение."""
+    config_path, _ = make_rules(tmp_path, {
+        "patterns": {"Скриншоты": ["^(снимок экрана|screenshot)"]},
+        "managed_folders": ["Учёба", "Медиа", "Скриншоты", "Documents",
+                            "Images", "Others", "Misc"],
+    })
+    (tmp_path / "overrides.json").write_text(
+        json.dumps({"Снимок экрана 1.png": "Скриншоты"}, ensure_ascii=False),
+        encoding="utf-8")
+
+    assert Config.load(config_path).notices == []
+
+
+def test_rule_for_a_file_no_pattern_knows_is_not_named(tmp_path):
+    """Правило, вытащившее файл из Others, — ровно то, ради чего они и нужны.
+
+    Таких большинство, и шуметь про них значило бы утопить настоящую находку.
+    """
+    config_path, _ = make_rules(tmp_path, {
+        "patterns": {"Скриншоты": ["^(снимок экрана|screenshot)"]},
+        "managed_folders": ["Учёба", "Медиа", "Скриншоты", "Documents",
+                            "Images", "Others", "Misc"],
+    })
+    (tmp_path / "overrides.json").write_text(
+        json.dumps({"63f3c2a2dfd4b.doc": "Учёба"}, ensure_ascii=False),
+        encoding="utf-8")
+
+    assert Config.load(config_path).notices == []
+
+
 def deny_reading(monkeypatch, denied):
     """Делает папку нечитаемой так же, как это делают права или снятый диск."""
     real = Path.iterdir
