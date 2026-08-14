@@ -6,8 +6,6 @@ from pathlib import Path
 import pytest
 
 import main as main_module
-from sorter.ai import (classify_many, load_api_key, parse_ai_response,
-                       useful_rules)
 from sorter.config import Config, usable_3d_path
 from sorter.classifier import explain_category, match_category, match_type
 from sorter.history import list_operations, undo_operation
@@ -658,76 +656,6 @@ def test_category_named_by_absolute_path_is_dropped(tmp_path):
 # --- запасная категория, переименованная в правилах ---
 
 
-def test_ai_unknown_category_falls_back_to_the_configured_name():
-    """Разбор ответа ИИ подставлял «Others» буквально, мимо настройки.
-
-    `fallback_category` в rules.json переименовывают — README прямо называет
-    его настраиваемым. Но выдумку модели («Музыка») разбор заменял строкой
-    «Others», а фильтр «не сохранять незнание» отсекает ответы по имени
-    запасной категории из конфига. Имена не совпадали, поэтому в overrides.json
-    уезжало правило `файл → Others`: категории с таким именем в правилах нет,
-    её нет и в `managed_folders`, значит папка `Загрузки/Others` больше никогда
-    не разбирается и не убирается. И это ещё правило с наивысшим приоритетом —
-    файлу закрыта дорога в любую новую категорию навсегда.
-    """
-    mapping = parse_ai_response(
-        '{"x.bin": "Музыка"}', ["Медиа", "Разное"], fallback="Разное")
-
-    assert mapping == {"x.bin": "Разное"}
-    assert useful_rules(mapping, "Разное") == {}
-
-
-# --- ключ ИИ, сохранённый в чужой кодировке ---
-
-
-def test_api_key_saved_as_utf16_is_read(tmp_path):
-    """Блокнот умеет сохранять `deepseek_key.txt` в UTF-16 — и чтение падало.
-
-    `read_text(encoding="utf-8")` бросает на таком файле UnicodeDecodeError.
-    Это ValueError, а не OSError, поэтому мимо него проходили все проверки в
-    программе: ключ читается без единого `try`. В окне исключение прилетало
-    внутрь слота PyQt, а там необработанное исключение гасит процесс целиком —
-    нажатие «✨ИИ» закрывало программу молча, без сообщения и без journal'а.
-    """
-    (tmp_path / "deepseek_key.txt").write_text("sk-abc123", encoding="utf-16")
-
-    assert load_api_key(tmp_path) == "sk-abc123"
-
-
-def test_api_key_with_utf8_bom_is_read(tmp_path):
-    """Тот же Блокнот, режим «UTF-8 с BOM»: метка приклеивалась к ключу.
-
-    Программа не падала, но ключ уезжал в заголовок Authorization вместе с
-    невидимым символом — DeepSeek отвечал «неверный ключ», и понять почему
-    было нельзя: в файле на вид ровно то, что выдал сайт.
-    """
-    (tmp_path / "deepseek_key.txt").write_text("sk-abc123", encoding="utf-8-sig")
-
-    assert load_api_key(tmp_path) == "sk-abc123"
-
-
-def test_unreadable_api_key_file_gives_no_key_instead_of_crash(tmp_path):
-    """Файл, который не разобрать ничем: ответ — «ключа нет», а не падение.
-
-    Окно на пустой ответ показывает понятное «Положи ключ в deepseek_key.txt».
-    Это лучше любого исключения: подсказка на месте, программа жива.
-    """
-    (tmp_path / "deepseek_key.txt").write_bytes(b"\xff\xfe\x41")
-
-    assert load_api_key(tmp_path) is None
-
-
-def test_env_key_still_wins_over_file(tmp_path, monkeypatch):
-    """Переменная окружения остаётся главнее файла."""
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-from-env")
-    (tmp_path / "deepseek_key.txt").write_text("sk-from-file", encoding="utf-8")
-
-    assert load_api_key(tmp_path) == "sk-from-env"
-
-
-# --- отчёт о применении: какие файлы не переехали ---
-
-
 def test_report_names_files_that_did_not_move():
     """Окно сообщало только число ошибок, а не то, какие файлы и почему.
 
@@ -961,46 +889,6 @@ def test_cleanup_keeps_3d_folder_that_still_has_files(tmp_path):
 
 
 # --- ответ ИИ не про те имена ---
-
-
-def test_ai_answer_about_a_name_we_did_not_ask_is_dropped():
-    """Модель дописывает в ответ имена, которых ей не присылали.
-
-    Правило из `overrides.json` живёт вечно и стоит выше всего остального,
-    поэтому выдуманное имя — не безобидный мусор: стоит появиться в загрузках
-    файлу с таким именем, и он поедет по решению, принятому вслепую, про
-    другую папку и год назад. Спрашивали про одно — записываем только про то
-    же самое.
-    """
-    got = parse_ai_response(
-        '{"клип.mp4": "Медиа", "выдуманный.exe": "Программы"}',
-        ["Медиа", "Программы"], "Others", requested=["клип.mp4"])
-
-    assert got == {"клип.mp4": "Медиа"}
-
-
-def test_ai_answer_returns_to_the_spelling_we_asked_about():
-    """Модель отвечает про тот же файл, но пишет имя по-своему.
-
-    Промт просит повторять ключ символ в символ, и модель это правило
-    нарушает регулярно: приводит имя к нижнему регистру, теряет служебный
-    номер. Правило ищется точным совпадением, поэтому такой ответ не совпадёт
-    ни с одним файлом — а окно всё равно отчитается «ИИ разложил N шт.».
-    Счёт врёт, файл остаётся неразобранным, и понять это неоткуда.
-    """
-    got = parse_ai_response(
-        '{"отчёт.pdf": "Документы"}', ["Документы"], "Others",
-        requested=["Отчёт.PDF"])
-
-    assert got == {"Отчёт.PDF": "Документы"}
-
-
-def test_ai_answer_without_a_list_of_names_is_taken_as_is():
-    """Без списка присланных имён фильтровать не по чему — разбор как раньше."""
-    assert parse_ai_response('{"a.pdf": "Учёба"}', ["Учёба"]) == {"a.pdf": "Учёба"}
-
-
-# --- откату нечего возвращать ---
 
 
 def test_undo_says_when_there_is_nothing_to_return(tmp_path):
@@ -2111,65 +1999,6 @@ def test_ordinary_names_are_still_allowed(tmp_path):
 # --- ответ ИИ про имена, различающиеся только регистром ---
 
 
-def test_ai_answer_about_two_names_differing_by_case_keeps_both():
-    """`readme.md` и `README.md` — на Windows разные файлы в разных папках.
-
-    Сверка ответа со списком спрошенных складывала имена в словарь по нижнему
-    регистру, и второе имя затирало первое. Ответ про один файл пропадал
-    молча — деньги за вопрос заплачены, правило не записано, — а второму
-    доставалась чужая категория: пары «ключ → имя» перепутаны.
-    """
-    got = parse_ai_response(
-        '{"readme.md": "Код", "README.md": "Учёба"}',
-        ["Код", "Учёба"], "Others",
-        requested=["readme.md", "README.md"])
-
-    assert got == {"readme.md": "Код", "README.md": "Учёба"}
-
-
-def test_ai_answer_in_other_case_is_still_matched_when_it_is_unambiguous():
-    """Модель нарушает «повторяй символ в символ» — одно имя вернуть можно."""
-    got = parse_ai_response(
-        '{"readme.md": "Учёба"}', ["Учёба"], "Others", requested=["README.md"])
-
-    assert got == {"README.md": "Учёба"}
-
-
-def test_ai_answer_in_other_case_is_dropped_when_it_could_be_either():
-    """Два кандидата — угадывать нельзя: правило встанет не на тот файл."""
-    got = parse_ai_response(
-        '{"Readme.md": "Учёба"}', ["Учёба"], "Others",
-        requested=["readme.md", "README.md"])
-
-    assert got == {}
-
-
-def test_ai_category_written_in_other_case_is_accepted():
-    """`3d` вместо `3D` — ответ верный, а выбрасывался как незнакомая категория.
-
-    Разбор сверял название категории строка в строку, поэтому такой ответ
-    становился запасной категорией, а фильтр «не сохранять незнание» его
-    выбрасывал. Снаружи это «без решения»: вопрос задан и оплачен, файл
-    остался неразобранным, и понять, что модель ответила верно, неоткуда.
-    """
-    got = parse_ai_response(
-        '{"деталь.stl": "3d", "клип.mp4": " Медиа "}',
-        ["3D", "Медиа"], "Others", requested=["деталь.stl", "клип.mp4"])
-
-    assert got == {"деталь.stl": "3D", "клип.mp4": "Медиа"}
-
-
-def test_ai_answer_with_a_truly_unknown_category_still_falls_back():
-    """Смягчение регистра не должно пропускать выдумку модели."""
-    got = parse_ai_response(
-        '{"a.bin": "Криптовалюта"}', ["3D"], "Others", requested=["a.bin"])
-
-    assert got == {"a.bin": "Others"}
-
-
-# --- галочка выноса 3D, записанная не булевым значением ---
-
-
 def test_3d_enabled_written_as_a_string_does_not_switch_the_export_on(tmp_path):
     """`"enabled": "false"` — строка, и она истинна: вынос включался наоборот.
 
@@ -2443,45 +2272,6 @@ def test_keyword_with_spaces_around_a_word_still_works(tmp_path):
 
 
 # --- правило в запасную категорию ---
-
-
-def test_rule_into_the_fallback_category_is_dropped(tmp_path):
-    """`0001-0250.mp4 → Others` не давало шаблону опознать рендер Blender.
-
-    Ручное правило стоит выше шаблонов и слов, поэтому такая запись — это
-    записанное «не знаю», которое закрывает файлу дорогу навсегда. Без неё файл
-    уехал бы в ту же запасную папку, но по текущим правилам; с ней — мимо всего,
-    что появилось потом. Отличить это от исправной работы нельзя ничем: план
-    построен, жалоб нет, в предпросмотре честная пометка «правило».
-
-    `ai.useful_rules` не даёт записать такое правило от модели, но записи,
-    попавшие в файл раньше, читались как обычные: проверка стояла только на
-    записи.
-    """
-    cfg_path = tmp_path / "config.json"
-    cfg_path.write_text(
-        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
-    (tmp_path / "rules.json").write_text(json.dumps({
-        "categories": {"Медиа": ["клип"]},
-        "patterns": {"3D": [r"^\d{4}-\d{4}\.(mp4|png)$"]},
-        "type_map": {"Videos": ["mp4"]},
-        "managed_folders": ["Медиа", "3D", "Videos", "Others", "Misc"],
-        "fallback_category": "Others",
-    }, ensure_ascii=False), encoding="utf-8")
-    (tmp_path / "overrides.json").write_text(json.dumps({
-        "0001-0250.mp4": "Others",
-        "клип.mp4": "Медиа",
-    }, ensure_ascii=False), encoding="utf-8")
-
-    config = Config.load(cfg_path)
-
-    assert "0001-0250.mp4" not in config.overrides
-    assert config.overrides == {"клип.mp4": "Медиа"}, "чужие правила не трогаем"
-    assert explain_category("0001-0250.mp4", "", config) == ("3D", "шаблон")
-    # Уведомление, а не поломка: файл прочитан целиком, а раскладка от пропуска
-    # этой строки становится вернее (`util.settings_message`).
-    assert any("0001-0250.mp4" in n for n in config.notices), config.notices
-    assert not config.problems, config.problems
 
 
 def test_rule_into_the_fallback_written_in_other_case_is_dropped_too(tmp_path):
@@ -3078,23 +2868,6 @@ def test_rules_saved_by_notepad_are_still_read(tmp_path, encoding):
     assert config.downloads_path == str(tmp_path / "загрузки")
 
 
-@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "cp1251"])
-def test_hand_written_rules_saved_by_notepad_are_still_read(tmp_path, encoding):
-    """`overrides.json` наполняют руками — значит и Блокнотом тоже."""
-    (tmp_path / "rules.json").write_text(_rules_text(), encoding="utf-8")
-    (tmp_path / "config.json").write_text(
-        json.dumps({"downloads_path": str(tmp_path / "загрузки")}),
-        encoding="utf-8")
-    (tmp_path / "overrides.json").write_text(
-        json.dumps({"смета.pdf": "Медиа"}, ensure_ascii=False), encoding=encoding)
-
-    config = Config.load(tmp_path / "config.json")
-
-    assert config.problems == []
-    assert config.overrides == {"смета.pdf": "Медиа"}
-    assert config.overrides_unreadable is False
-
-
 def test_undo_journal_saved_by_notepad_is_still_a_record(tmp_path):
     """Журнал отмены, пересохранённый руками, пропадал из истории молча.
 
@@ -3256,36 +3029,6 @@ def test_3d_extensions_listed_properly_stay_quiet(tmp_path):
 
 
 # --- записи overrides.json, которые разбор отверг ---
-
-
-def test_rejected_rules_survive_a_rewrite(tmp_path):
-    """Кнопка «✨ИИ» стирала из overrides.json записи, забракованные разбором.
-
-    Разбор выбрасывает правило с непригодной категорией (`"Учёба "` — пробел по
-    краю, файловая система запишет папку иначе) и говорит об этом при старте:
-    «Пропущено». Звучит это как «в этот раз не применилось», а на деле первое
-    же нажатие «✨ИИ» записывало на место файла то, что осталось в памяти, — и
-    строка исчезала совсем, вместе с предупреждением, которое на неё
-    показывало. Чинить опечатку в редакторе было уже нечего.
-
-    Незнакомые ключи `config.json` сохранение возвращает на место ровно по этой
-    причине; у правил, которые пишут руками и второй копии которых нет, такой
-    защиты не было.
-    """
-    (tmp_path / "overrides.json").write_text(json.dumps({
-        "смета.pdf": "Учёба ",
-        "клип.mp4": "Медиа",
-    }, ensure_ascii=False), encoding="utf-8")
-    (tmp_path / "config.json").write_text(
-        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
-
-    config = Config.load(tmp_path / "config.json")
-
-    assert config.overrides == {"клип.mp4": "Медиа"}
-    assert config.overrides_dropped == {"смета.pdf": "Учёба "}
-
-
-# --- файл, занявший путь СВОЕЙ цели, и порядок «кто кому уступает» ---
 
 
 def test_file_named_like_the_fallback_category_still_moves(tmp_path):
@@ -3830,50 +3573,6 @@ def test_healthy_type_map_stays_quiet(tmp_path):
     problems = Config.load(config_path).problems
 
     assert [p for p in problems if "type_map" in p] == []
-
-
-def test_failed_batch_is_named_and_not_counted_as_no_decision(tmp_path):
-    """Упавшая пачка выглядела как «модель посмотрела и не смогла».
-
-    Окно считает оставшихся без решения вычитанием — сколько спросили минус
-    сколько правил вышло — и печатает «без решения: 40». На деле модель этих
-    сорока имён не видела вовсе: оборвалась сеть, истёк таймаут, ключ упёрся в
-    предел запросов. Разница вся: в первом случае делать нечего, во втором
-    помогает повторный запрос, а понять, какой из двух случаев перед тобой,
-    было неоткуда.
-    """
-    names = [f"файл{i}.bin" for i in range(90)]  # три пачки: 40, 40, 10
-    calls = {"n": 0}
-
-    def flaky(batch, categories, api_key, **kwargs):
-        calls["n"] += 1
-        if calls["n"] == 2:
-            raise OSError("сеть отвалилась")
-        return {name: "Медиа" for name in batch}
-
-    problems = []
-    result = classify_many(
-        names, ["Медиа", "Others"], "sk-test",
-        classifier=flaky, problems=problems)
-
-    assert len(result) == 50, "уцелевшие пачки должны доехать"
-    assert len(problems) == 1, f"о поломке не сказано: {problems}"
-    assert "сеть отвалилась" in problems[0]
-    assert "40" in problems[0], "надо назвать, сколько имён потеряно"
-
-
-def test_all_batches_through_says_nothing(tmp_path):
-    """Когда всё дошло, жаловаться не на что."""
-    problems = []
-    classify_many(
-        ["a.bin", "b.bin"], ["Медиа"], "sk-test",
-        classifier=lambda batch, *a, **k: {n: "Медиа" for n in batch},
-        problems=problems)
-
-    assert problems == []
-
-
-# --- папка, которую не удалось прочитать ---
 
 
 def deny_reading(monkeypatch, denied):

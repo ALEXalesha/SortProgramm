@@ -94,12 +94,6 @@ def test_font_lora_is_not_an_ai_model(cfg):
     assert category(cfg, "Lora-Regular.ttf") == "Дизайн"
 
 
-def test_every_category_has_a_hint(cfg):
-    """Подсказки уходят в промт ИИ — без них модель путает соседние категории."""
-    named = set(cfg.categories) | {cfg.fallback_category}
-    assert named <= set(cfg.category_hints)
-
-
 def test_managed_folders_cover_all_categories(cfg):
     """Иначе переразложение не зайдёт в папку собственной категории."""
     missing = (set(cfg.categories) | {cfg.fallback_category}) - set(cfg.managed_folders)

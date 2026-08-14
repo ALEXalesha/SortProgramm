@@ -5,75 +5,21 @@ import os
 import sys
 from pathlib import Path
 
-import json
-
-from PyQt6.QtCore import Qt, QPoint, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QCheckBox, QVBoxLayout,
     QHBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
     QLineEdit, QFileDialog, QDialog,
 )
 
-from .classifier import find_override, override_key
-from .config import Config, OVERRIDES_FILENAME
-from .scanner import scan
-from .planner import build_plan, external_3d_warning, goes_by_extension, Move
+from .config import Config
+from .planner import build_plan, external_3d_warning, Move
 from .mover import apply
 from .util import (PLAN_EMPTY, PLAN_NOT_BUILT, PLAN_NO_FOLDER, listing,
                    nothing_to_apply, rel_to, report, report_title,
                    settings_message)
-from . import ai
 from . import history
 
-
-class _AiWorker(QThread):
-    """Фоновый запрос к DeepSeek, чтобы окно не зависало.
-
-    Длинный список уходит пачками (`ai.classify_many`), поэтому по дороге
-    прилетает прогресс — иначе на сотне имён окно молчит полминуты и кажется
-    зависшим.
-
-    Пачки, не дошедшие до модели, складываются в `problems` и уезжают наверх
-    вместе с ответом: упавшая пачка снаружи неотличима от честного «модель не
-    смогла», а помогает от неё совсем другое — повторить запрос.
-    """
-    done = pyqtSignal(dict)
-    failed = pyqtSignal(str)
-    progress = pyqtSignal(int, int)
-
-    def __init__(self, filenames, categories, api_key, hints=None, fallback="Others"):
-        super().__init__()
-        self._filenames = filenames
-        self._categories = categories
-        self._api_key = api_key
-        self._hints = hints or {}
-        self._fallback = fallback
-        self._stopped = False
-        self.problems: list[str] = []
-
-    def stop(self):
-        """Просит бросить остаток списка. Запрос в полёте не прерывает."""
-        self._stopped = True
-
-    def run(self):
-        try:
-            problems: list[str] = []
-            result = ai.classify_many(
-                self._filenames,
-                self._categories,
-                self._api_key,
-                on_progress=lambda done, total: self.progress.emit(done, total),
-                should_stop=lambda: self._stopped,
-                hints=self._hints,
-                fallback=self._fallback,
-                problems=problems,
-            )
-            # Список заполнен до сигнала, а читают его уже в главном потоке,
-            # разобрав `done`. Гонки тут нет: после `emit` поток ничего не пишет.
-            self.problems = problems
-            self.done.emit(result)
-        except Exception as exc:  # сеть, ключ, разбор — наружу как текст
-            self.failed.emit(str(exc))
 
 STYLE = """
 #glass {
@@ -354,14 +300,11 @@ class GlassWindow(QWidget):
         open_btn.clicked.connect(self.open_downloads)
         clean_btn = QPushButton("🧹 Очистить")
         clean_btn.clicked.connect(self.preview)
-        self.ai_btn = QPushButton("✨ ИИ")
-        self.ai_btn.clicked.connect(self.run_ai)
         history_btn = QPushButton("🕘 История")
         history_btn.clicked.connect(self.show_history)
         row.addWidget(browse)
         row.addWidget(open_btn)
         row.addWidget(clean_btn)
-        row.addWidget(self.ai_btn)
         row.addWidget(history_btn)
         return row
 
@@ -533,10 +476,12 @@ class GlassWindow(QWidget):
                 self.to_3d.isChecked(), self.resort.isChecked())
 
     def preview(self, deep: bool = False):
-        """Строит план.
+        """Строит план. Глубину задаёт галочка «Переразложить старое».
 
-        Глубину задаёт либо аргумент (после ИИ она всегда полная), либо галочка
-        «Переразложить старое». Папка All_3d разбирается в любом случае.
+        Папка All_3d разбирается в любом случае, пока задан её путь.
+
+        Аргумент оставлен, потому что `clicked` у кнопки приносит с собой `bool`:
+        слот принимает его и складывает с галочкой, а не подменяет ею глубину.
         """
         deep = deep or self.resort.isChecked()
         self._sync_config()
@@ -595,323 +540,9 @@ class GlassWindow(QWidget):
         self.plan_state = PLAN_EMPTY if not self.moves else ""
         self.status.setText(f"План готов: {len(self.moves)} шт.{tail}")
 
-    def _save_overrides(self) -> str:
-        """Пишет overrides.json. Возвращает текст ошибки или пустую строку.
-
-        Раньше OSError глотался целиком, и это худший вид молчания: правила
-        живут в памяти до закрытия окна, поэтому и план, и раскладка выглядят
-        как надо. Пропадает ответ ИИ уже потом — при следующем запуске, когда
-        связать пропажу с той кнопкой не с чем.
-
-        Файл, который не удалось прочитать при запуске, не переписываем вовсе.
-        Разбор настроек говорит о нём «Файл пропущен» и работает с пустым
-        словарём — это про текущий запуск, а звучит как «в этот раз без
-        правил». На деле первое же нажатие «✨ИИ» записывало на его место свой
-        ответ, и от прежнего содержимого не оставалось ничего: у overrides.json
-        нет ни истории, ни журнала отмены, в отличие от самих перемещений, а
-        живут в нём решения, принятые руками, — сотни строк, накопленных за
-        годы. Дорога сюда короткая: недописанная скобка при правке руками,
-        оборванная запись, кончившееся место. Файл при этом почти всегда цел и
-        чинится в редакторе за минуту — если он ещё есть.
-
-        Записи, которые разбор отверг, возвращаются на место (`overrides_dropped`).
-        Их та же беда, только помельче: правило с непригодной категорией
-        (`"Учёба "` — пробел по краю, папка получится другая) до `overrides` не
-        доезжает, разбор про него говорит «Пропущено», человек слышит «в этот
-        раз не применилось» и собирается поправить опечатку в редакторе. А
-        запись отсюда стирала строку насовсем — вместе с предупреждением,
-        которое на неё показывало. Незнакомые ключи `config.json` сохранение
-        возвращает на место ровно по этой причине; у правил, которые пишут
-        руками, такой защиты не было.
-        """
-        if self.config.overrides_unreadable:
-            return ("файл не удалось прочитать при запуске, а запись на его "
-                    "место стёрла бы все правила, которые в нём лежат")
-        path = self.config_path.with_name(OVERRIDES_FILENAME)
-        keep = {**self.config.overrides_dropped, **self.config.overrides}
-        try:
-            path.write_text(
-                json.dumps(keep, ensure_ascii=False, indent=2),
-                encoding="utf-8")
-        except OSError as exc:
-            return str(exc)
-        return ""
-
-    def _has_rule(self, filename: str) -> bool:
-        """Решали ли про это имя руками — неважно, годной вышла запись или нет.
-
-        Ищем ровно тем же способом, каким правило найдёт разбор
-        (`classifier.override_key`): точное имя, имя без служебного номера и
-        то же самое по правилам файловой системы. Правило `клип.mp4` покрывает
-        и `клип (1).mp4` — номер приписала сама программа при конфликте имён,
-        файл от этого другим не стал, и вопрос про него уже оплачен.
-
-        Расходиться с разбором тут нельзя ни в какую сторону: спросим лишнего —
-        заплатим за правило, которое уже есть; не спросим нужного — файл
-        останется неразобранным, а окно отчитается «нечего разбирать».
-
-        Записи, которые разбор отверг (`overrides_dropped`), считаются здесь
-        наравне с принятыми, и это половина всей защиты. Запись
-        `«клип.mp4» → «Медиа »` (пробел по краю — папка получится другая) в
-        `overrides` не доезжает: разбор о ней жалуется при старте словом
-        «Пропущено», человек слышит «в этот раз не применилось» и собирается
-        поправить опечатку в редакторе. Пока сюда смотрел один лишь
-        `overrides`, дальше шло по кругу: имя уходило в платный запрос как
-        ничьё, ответ модели ложился в `overrides` тем же ключом, а
-        `_save_overrides` склеивает отвергнутое с принятым так, что принятое
-        сильнее, — и строка, которую человек шёл чинить, заменялась догадкой
-        модели. Ни истории, ни журнала отмены у `overrides.json` нет, а
-        жалоба при следующем старте пропадала вместе со строкой: чинить стало
-        нечего.
-        """
-        return (override_key(self.config.overrides, filename) is not None
-                or override_key(self.config.overrides_dropped, filename) is not None)
-
-    def run_ai(self):
-        """Спрашивает DeepSeek про то же, что разбирает обычная уборка.
-
-        Глубину задаёт галочка «Переразложить старое», как и у «🧹 Очистить».
-        Раньше кнопка всегда уходила вглубь, и на разобранной папке это било
-        дважды: запрос раздувался с десятка имён до тысячи, а правила для уже
-        разложенных файлов оседали в overrides.json и перетасовывали папки,
-        которые никто не просил трогать.
-
-        Имена, у которых правило уже есть, в запрос не уходят. Ответ модели их
-        всё равно не трогает (`_ai_done` бережёт решение, принятое руками), а
-        деньги и минуты за них платились наравне со всеми: на разобранной папке
-        второе нажатие «✨ИИ» превращалось в оплаченную пустышку — запрос на
-        сотню имён и «ИИ разложил 0 шт.» в ответ.
-
-        Модели, которые поедут во внешнюю папку 3D, не уходят в запрос по той же
-        причине. Место им выбирает расширение, категория при этом не
-        спрашивается вовсе (`planner.goes_by_extension`), так что ответ модели
-        оседает в overrides.json и не делает ничего. Заметить это было нельзя:
-        окно отчитывалось «ИИ разложил 30 шт.», а в плане те же тридцать строк
-        стояли с пометкой «по расширению» — отчёт спорил с планом, лежащим
-        рядом. Правило вдобавок пустое по смыслу: каждое расширение из
-        `external_3d.extensions` и так стоит словом в категории «3D» (это
-        держит тест `test_every_external_3d_extension_is_a_3d_keyword`), то есть
-        модель платно повторяла то, что правила знают и без неё.
-
-        Пустое поле пути отбивается отдельно: `Path("")` — это текущая папка, и
-        `is_dir()` на ней отвечает True. Без этой проверки ИИ разбирал папку
-        самой программы — её имена уходили в DeepSeek, ответы записывались
-        правилами.
-
-        Нечитаемый `overrides.json` отбивается здесь же, до запроса. Записывать
-        на его место `_save_overrides` отказывается давно — там лежат сотни
-        решений, принятых руками, и второй копии у них нет, — но отказ этот
-        случался уже после ответа модели: запрос уходил, деньги списывались, а
-        в конце окно говорило «правила не сохранены... запрос придётся
-        повторить». Повторять его бесполезно: пока файл не починят в редакторе,
-        сохранить ответ не выйдет ни в этот раз, ни в следующий. Проверка стояла
-        ровно с одной стороны — на записи, — а спрашивать пускали кого угодно.
-        """
-        self._sync_config()
-        root = Path(self.config.downloads_path)
-        if not self.config.downloads_path or not root.is_dir():
-            QMessageBox.information(self, "Папка не найдена", "Укажи существующую папку.")
-            return
-        if self.config.overrides_unreadable:
-            QMessageBox.warning(
-                self, "Правила не читаются",
-                f"{OVERRIDES_FILENAME} лежит рядом с программой, но разобрать "
-                "его не вышло — об этом сказано при запуске.\n\n"
-                "Пока он не починен, ответ модели сохранить некуда: запись на "
-                "его место стёрла бы все правила, которые в нём лежат. "
-                "Спрашивать поэтому не будем — деньги ушли бы впустую.\n\n"
-                "Поправь файл в редакторе (или удали, если он не нужен) и "
-                "перезапусти программу.")
-            return
-        key = ai.load_api_key(self.config_path.parent)
-        if not key:
-            QMessageBox.warning(
-                self, "Нет ключа",
-                "Положи ключ в файл deepseek_key.txt рядом с программой\n"
-                "или задай переменную окружения DEEPSEEK_API_KEY.\n\n"
-                "В файле должен лежать сам ключ и больше ничего: заметку рядом "
-                "с ним программа ключом не считает.")
-            return
-        # Папки, которые не удалось прочитать, забираем тем же списком, каким их
-        # забирает план. Обход умеет о них говорить, `build_plan` доносит их до
-        # трёх интерфейсов — а эта кнопка зовёт обход напрямую, четвёртым
-        # читателем, и жалобы просто не брала: починку до неё не донесли.
-        #
-        # Ноль тут врёт злее, чем в плане. «План готов: 0 шт.» хотя бы называет
-        # себя планом, а «Нечего разбирать» значит «всё уже разложено» — и это
-        # про папку, полную файлов, которую окно не смогло открыть. Соседняя
-        # кнопка на той же папке в ту же секунду говорит «Не прочитано папок: 1».
-        unread: list[str] = []
-        files = scan(self.config.downloads_path, self.config,
-                     deep=self.resort.isChecked(), problems=unread)
-        # В строку — счёт, в подсказку мышью — сами имена: так же, как у плана и
-        # у списка непрочитанных журналов в «🕘 Истории».
-        self.status.setToolTip("\n".join(unread))
-        unread_tail = (f"   Не прочитано папок: {len(unread)} — их файлы в "
-                       "запрос не попали." if unread else "")
-        # Ту же строку дописывает и отчёт после ответа. Обход о папке говорит
-        # один раз, а прочитать её человек может только в той строке, которая
-        # осталась на экране, — а остаётся последняя. Спрашивает про папку
-        # именно эта кнопка, ей и отчитываться: пересчитывать заново значило бы
-        # гадать по другому обходу, с другой глубиной.
-        self._ai_unread = unread_tail
-        # Одно имя — один вопрос. Ключ в overrides.json это имя без пути, поэтому
-        # второй `клип.mp4` из соседней папки не добавляет вопросу ничего: ответ
-        # будет тот же и распространится на оба файла. Раньше повторы уходили в
-        # запрос по разу на файл — лишние деньги, лишние пачки, и счёт
-        # «спрашиваю по N именам» из-за них врал.
-        seen = list(dict.fromkeys(f.name for f in files))
-        to_3d = self.to_3d.isChecked()
-        by_ext = [n for n in seen if goes_by_extension(n, self.config, to_3d)]
-        askable = [n for n in seen if n not in set(by_ext)]
-        names = [name for name in askable if not self._has_rule(name)]
-        covered = [n for n in askable
-                   if override_key(self.config.overrides, n) is not None]
-        # Правило есть, но разбор его не принял. Считаем отдельно от рабочих:
-        # «уже с правилами» про такое имя было бы неправдой — правило как раз
-        # не работает и ждёт починки в редакторе, о которой сказано при старте.
-        rejected = len(askable) - len(names) - len(covered)
-        # Почему часть имён не спрашиваем. Молчать нельзя: «спрашиваю по 3
-        # именам» на папке из тридцати файлов выглядит как потерянный список.
-        skipped = []
-        if covered:
-            skipped.append(f"{len(covered)} уже с правилами")
-        if rejected:
-            skipped.append(f"{rejected} с правилами, которые разбор отверг")
-        if by_ext:
-            skipped.append(f"{len(by_ext)} поедут по расширению")
-        reasons = ", ".join(skipped)
-        if not names:
-            self.status.setText(
-                (f"Нечего разбирать: {reasons}." if reasons
-                 else "Нечего разбирать.") + unread_tail)
-            return
-        cats = list(self.config.categories.keys()) + [self.config.fallback_category]
-        # Сколько имён ушло в запрос. Ответ приходит один, без вопроса, а
-        # посчитать оставшихся без решения можно только сравнив одно с другим.
-        self._ai_asked = len(names)
-        self.ai_btn.setEnabled(False)
-        tail = f" ({reasons} — не спрашиваем)" if reasons else ""
-        self.status.setText(
-            f"Спрашиваю DeepSeek по {len(names)} именам…{tail}{unread_tail}")
-        self._worker = _AiWorker(
-            names, cats, key, self.config.category_hints,
-            self.config.fallback_category)
-        self._worker.done.connect(self._ai_done)
-        self._worker.failed.connect(self._ai_failed)
-        self._worker.progress.connect(self._ai_progress)
-        self._worker.start()
-
-    def _ai_progress(self, done, total):
-        self.status.setText(f"DeepSeek: пачка {done} из {total}…")
-
-    def _ai_done(self, mapping):
-        self.ai_btn.setEnabled(True)
-        if not mapping:
-            self.status.setText("ИИ не вернул результатов.")
-            return
-        # «Others» от модели — это «не знаю», а не решение. Правилом не пишем:
-        # оно встало бы выше ключевых слов и закрыло файлу дорогу навсегда.
-        rules = ai.useful_rules(mapping, self.config.fallback_category)
-        # Правило, которое уже есть, не трогаем. `update` не спрашивал, было ли
-        # там что-то, и решение, принятое руками, молча заменялось мнением
-        # модели — включая разобранный в README случай, где `Puck_Launcher.step`
-        # уезжает в «Игры» по слову launcher. Отменить это нечем: у
-        # overrides.json нет ни истории, ни журнала отмены, а следующее нажатие
-        # «✨ИИ» стирало починку снова. Файлы без правила модель разбирает
-        # по-прежнему, поэтому повторный запрос после новых категорий работает
-        # как работал.
-        # Сверяемся ровно тем же способом, каким кнопка решала, о чём вообще
-        # спрашивать (`_has_rule`). Раньше здесь стояло `n in overrides` —
-        # проверка по точному ключу и только по принятым правилам, — а
-        # спрашивали по другой, и в зазор проваливались записи, отвергнутые
-        # разбором: их не считали правилом ни там, ни тут, и ответ модели
-        # ложился поверх строки, написанной руками.
-        kept = [name for name in rules if self._has_rule(name)]
-        fresh = {n: c for n, c in rules.items() if not self._has_rule(n)}
-        self.config.overrides.update(fresh)
-        failure = self._save_overrides() if fresh else ""
-        # Глубина — та же, что была у запроса: план должен показывать ровно те
-        # файлы, про которые спрашивали. Жёсткое deep=True вытаскивало в план
-        # всё разложенное, хотя новые правила касались только корня.
-        #
-        # План строится ДО отчёта: `preview` пишет в ту же строку состояния, и
-        # поставленный раньше итог она затирала молча — оба вызова идут внутри
-        # одного слота, окно между ними не перерисовывается. Других слов у
-        # кнопки ИИ нет, окон сообщений она не показывает, так что человек
-        # ждал запроса, платил за него и не узнавал о нём ничего.
-        self.preview()
-        # Без решения — это про вопрос, а не про ответ. Раньше считали
-        # `len(mapping) - len(rules)`, то есть одни лишь «Others»: имена, про
-        # которые модель промолчала или ответила чужим ключом (сверка такой
-        # отбрасывает), не попадали никуда — ни в правила, ни в счёт. Окно
-        # отчитывалось «ИИ разложил 1 шт.», и человек, спросивший про сорок
-        # файлов и заплативший за все сорок, не узнавал, что тридцать девять
-        # остались неразобранными.
-        asked = getattr(self, "_ai_asked", len(mapping))
-        undecided = max(0, asked - len(rules))
-        # Пачки, не дошедшие до модели. Без этой строки они попадали в «без
-        # решения» — фразу, которая значит «модель посмотрела и не смогла», —
-        # и человек, у которого просто оборвалась сеть, узнавал ровно
-        # обратное тому, что случилось: повторять запрос ему было незачем.
-        lost = getattr(getattr(self, "_worker", None), "problems", []) or []
-        notes = []
-        if undecided:
-            notes.append(f"без решения: {undecided}")
-        if lost:
-            notes.append(f"пачек не дошло: {len(lost)}")
-        if kept:
-            notes.append(f"свои правила сохранены: {len(kept)}")
-        tail = f" ({'; '.join(notes)})" if notes else ""
-        # Про непрочитанную папку говорит и эта строка: она остаётся на экране,
-        # а «без решения» рядом — совсем про другое (модель посмотрела и не
-        # смогла). Файлы такой папки в запрос не попадали вовсе.
-        tail += getattr(self, "_ai_unread", "")
-        self.status.setText(f"ИИ разложил {len(fresh)} шт.{tail}")
-        if lost and not failure:
-            QMessageBox.warning(
-                self, "Не все имена дошли до модели",
-                "Часть списка до DeepSeek не доехала — эти имена остались без "
-                "решения не потому, что модель не смогла:\n\n"
-                + "\n".join(f"• {why}" for why in lost)
-                + "\n\nПовтори запрос: имена, у которых правило уже появилось, "
-                  "второй раз не спрашиваются.")
-        if failure:
-            self.status.setText(
-                f"ИИ разложил {len(fresh)} шт.{tail}, но правила не сохранены.")
-            QMessageBox.warning(
-                self, "Правила не сохранены",
-                f"Ответ модели не удалось записать в overrides.json:\n{failure}\n\n"
-                "Пока окно открыто, правила действуют, но после закрытия "
-                "пропадут — запрос придётся повторить.")
-
-    def _ai_failed(self, err):
-        self.ai_btn.setEnabled(True)
-        self.status.setText("Ошибка ИИ.")
-        QMessageBox.warning(self, "Ошибка ИИ", err)
-
     def closeEvent(self, e):
         self._save_settings()
-        self._stop_ai()
         super().closeEvent(e)
-
-    def _stop_ai(self):
-        """Дожидается фонового запроса к ИИ, если он ещё идёт.
-
-        `_AiWorker` — это `QThread`, а Qt обрывает процесс, если объект потока
-        уничтожается на ходу. Окно держит поток полем, поэтому цепочка была
-        короткая: нажал «✨ИИ» на большой папке, передумал, закрыл окно — и
-        вместо тихого выхода Windows показывал падение. Настройки к тому
-        моменту уже сохранены, но выглядит это как поломка на ровном месте.
-
-        Сначала просим бросить остаток списка, потом ждём. Запрос в полёте не
-        прервать — там сидит `urlopen`, — но дольше одного таймаута ожидание
-        не затянется, а обычно поток уходит сразу.
-        """
-        worker = getattr(self, "_worker", None)
-        if worker is not None and worker.isRunning():
-            worker.stop()
-            worker.wait()
 
     def do_apply(self):
         """Выполняет показанный план.

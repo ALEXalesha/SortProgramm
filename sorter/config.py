@@ -47,7 +47,6 @@ NO_DOWNLOADS_PROBLEM = "config.json: папка загрузок не указа
 RULE_KEYS = (
     "categories",
     "patterns",
-    "category_hints",
     "type_map",
     "managed_folders",
     "ignore",
@@ -833,7 +832,6 @@ class Config:
     downloads_path: str
     categories: dict[str, list[str]] = field(default_factory=dict)
     patterns: dict[str, list[str]] = field(default_factory=dict)
-    category_hints: dict[str, str] = field(default_factory=dict)
     type_map: dict[str, list[str]] = field(default_factory=dict)
     managed_folders: list[str] = field(default_factory=list)
     ignore: list[str] = field(default_factory=list)
@@ -851,28 +849,16 @@ class Config:
     # может быть неверной». Уведомление, попавшее туда, врёт обеими фразами и
     # висит при каждом запуске навсегда (`util.settings_message`).
     notices: list[str] = field(default_factory=list)
-    # `overrides.json` рядом лежит, но разобрать его не вышло.
+    # `config.json` рядом лежит, но разобрать его не вышло. Программа
+    # переписывает этот файл при каждом закрытии окна, поэтому оборванная
+    # запись — обычное дело; на место нечитаемого не пишем (см. `save`).
     #
-    # Отличать это от «файла нет» приходится потому, что писать в него умеет
-    # окно (кнопка «✨ИИ»), а пустой словарь у обоих случаев одинаковый. Файла
-    # нет — писать можно, терять нечего. Файл есть и не читается — там могут
-    # лежать сотни решений, принятых руками, и запись на его место стёрла бы
-    # их все разом (см. `ui_qt._save_overrides`).
-    overrides_unreadable: bool = False
-    # Записи `overrides.json`, которые разбор отверг: непригодная категория,
-    # правило в запасную папку, значение не строкой.
-    #
-    # Держим их отдельно по той же причине, по какой `extra` держит незнакомые
-    # ключи `config.json`: работать с ними нельзя, а выбросить — значит стереть
-    # строку, которую писали руками. Разбор про такую запись говорит
-    # «Пропущено», человек слышит «в этот раз не применилось» и собирается
-    # починить опечатку в редакторе, — а первое же нажатие «✨ИИ» записывало на
-    # место файла то, что осталось в памяти, и чинить становилось нечего
-    # (см. `ui_qt._save_overrides`).
-    overrides_dropped: dict[str, str] = field(default_factory=dict)
-    # `config.json` рядом лежит, но разобрать его не вышло. Случай тот же, что
-    # и у `overrides.json`, и ответ тот же: на место нечитаемого файла не пишем
-    # (см. `save`).
+    # У `overrides.json` такого флага больше нет и не нужно: писать в него
+    # некому. Раньше умела кнопка «✨ИИ», и ради неё разбор держал ещё два поля —
+    # «файл не читается» и «записи, которые разбор отверг», — чтобы ответ модели
+    # не встал на место сотен решений, принятых руками. Кнопки нет, файл стал
+    # для программы только читаемым, и защищать его от самих себя больше не от
+    # чего.
     settings_unreadable: bool = False
 
     @classmethod
@@ -974,20 +960,13 @@ class Config:
         # же порядке, в каком они лежат в файле, — так их проще искать глазами.
         categories = _rule_map(rules.get("categories"), rules_name, "categories", problems)
         patterns = _pattern_map(rules.get("patterns"), rules_name, "patterns", problems)
-        category_hints = _text_map(
-            rules.get("category_hints"), rules_name, "category_hints", problems)
         type_map = _rule_map(rules.get("type_map"), rules_name, "type_map", problems)
         managed_folders = _trim_managed(
             _text_list(rules.get("managed_folders"), rules_name,
                        "managed_folders", problems),
             rules_name, problems)
         ignore = _text_list(rules.get("ignore"), rules_name, "ignore", problems)
-        # Пустой словарь получается и когда файла нет, и когда он есть, но не
-        # читается. Для работы это одно и то же, а для записи — нет: во втором
-        # случае на диске лежат правила, которых мы не знаем.
-        overrides_path = path.with_name(OVERRIDES_FILENAME)
-        raw_overrides = _read_json(overrides_path, problems)
-        overrides_unreadable = raw_overrides is None and overrides_path.exists()
+        raw_overrides = _read_json(path.with_name(OVERRIDES_FILENAME), problems)
         overrides = _text_map(
             raw_overrides, overrides_name, "правила", problems, folders=True)
         external_3d = _clean_3d(data.get("external_3d"), problems)
@@ -1002,12 +981,6 @@ class Config:
         # правил, а не внутри него.
         overrides = _drop_frozen_rules(
             overrides, fallback_category, overrides_name, notices)
-
-        # Что из файла не доехало до `overrides`. Работать с этим нельзя, а
-        # стирать — тем более: строку писали руками, второй копии у неё нет.
-        overrides_dropped = {
-            name: value for name, value in (raw_overrides or {}).items()
-            if name not in overrides}
 
         # Раскладывать не по чему. Снаружи это выглядит как обычная работа:
         # план построен, файлы разложены, жалоб нет — только все до одного
@@ -1067,7 +1040,6 @@ class Config:
             downloads_path=downloads,
             categories=categories,
             patterns=patterns,
-            category_hints=category_hints,
             type_map=type_map,
             managed_folders=managed_folders,
             ignore=ignore,
@@ -1078,8 +1050,6 @@ class Config:
             extra={k: v for k, v in data.items() if k not in skip},
             problems=problems,
             notices=notices,
-            overrides_unreadable=overrides_unreadable,
-            overrides_dropped=overrides_dropped,
             settings_unreadable=settings_unreadable,
         )
 

@@ -587,39 +587,6 @@ def test_every_caller_asks_for_the_complaints():
 # --- разбор чужого ввода -----------------------------------------------------
 
 
-def test_ai_answer_parser_never_invents_a_name_or_a_category():
-    """Ответ модели — чужой ввод, и он уезжает ключом в `overrides.json`.
-
-    Выдуманное имя оседает там навсегда и однажды решит судьбу файла, про
-    который никто не спрашивал. Выдуманная категория станет именем папки.
-    """
-    from sorter.ai import parse_ai_response, useful_rules
-
-    cats = ["Медиа", "Учёба", "3D", "Others"]
-    names = ["клип.mp4", "клип (1).mp4", "КЛИП.MP4", "задача.pdf", "папка/", "", "  "]
-    junk = [
-        "", "не json", "{}", "[]", "null", "42", '{"a":', "```json\n{}\n```",
-        '{"клип.mp4": "Медиа"}', '{"клип.mp4": 5}', '{"клип.mp4": null}',
-        '{"": "Медиа"}', '{"/": "Медиа"}', '{"клип.mp4": "выдумка"}',
-        '{"чужое.txt": "Медиа"}', '{"КЛИП.MP4": "медиа"}', '{"клип.mp4": " 3d "}',
-        'мусор {"клип.mp4": "Учёба"} хвост', '{"a":1}{"b":2}',
-        '{"клип.mp4": "Others"}', '{"папка/": "3D"}',
-    ]
-    rng = random.Random(20260810)
-    for _ in range(600):
-        content = rng.choice(junk)
-        asked = rng.sample(names, rng.randint(1, 4))
-        fallback = rng.choice(["Others", "Прочее"])
-        known = cats + ([fallback] if fallback not in cats else [])
-        out = parse_ai_response(content, known, fallback, requested=asked)
-        allowed = {n.rstrip("/") for n in asked}
-        for key, value in out.items():
-            assert key in allowed, f"ответ про имя, о котором не спрашивали: {key!r}"
-            assert value in known, f"категория, которой нет в правилах: {value!r}"
-        assert fallback not in useful_rules(out, fallback).values(), (
-            "«не знаю» записалось правилом и закрыло файлу дорогу навсегда")
-
-
 def test_settings_parser_survives_any_junk_and_keeps_foreign_keys(tmp_path):
     """`rules.json` и `config.json` правят руками, значит там бывает что угодно.
 
@@ -648,7 +615,7 @@ def test_settings_parser_survives_any_junk_and_keeps_foreign_keys(tmp_path):
 
         for name, want in (("categories", dict), ("patterns", dict),
                            ("type_map", dict), ("overrides", dict),
-                           ("category_hints", dict), ("external_3d", dict),
+                           ("external_3d", dict),
                            ("managed_folders", list), ("ignore", list),
                            ("downloads_path", str), ("fallback_category", str),
                            ("fallback_type", str)):
