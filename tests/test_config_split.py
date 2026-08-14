@@ -15,7 +15,6 @@ USER = {
 RULES = {
     "categories": {"Медиа": ["клип"]},
     "patterns": {"Скриншоты": ["^screenshot"]},
-    "category_hints": {"Медиа": "музыка и видео"},
     "type_map": {"Videos": ["mp4"]},
     "managed_folders": ["Медиа", "Videos"],
     "ignore": ["*.tmp"],
