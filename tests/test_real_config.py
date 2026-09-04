@@ -94,6 +94,40 @@ def test_font_lora_is_not_an_ai_model(cfg):
     assert category(cfg, "Lora-Regular.ttf") == "Дизайн"
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Расписание_новое.docx",
+        "расписание.pdf",
+        "Расписание 2 семестр.xlsx",
+        "новое расписание уроков.docx",
+        "РАСПИСАНИЕ.PDF",
+        "raspisanie_2026.pdf",
+    ],
+)
+def test_schedule_goes_to_studies(cfg, name):
+    """Расписание — это учёба, а оно уезжало в Others как неопознанное.
+
+    Слово взято основой (`расписан`), потому что склоняется: расписание,
+    расписания, расписанию. Транслитерация рядом — так устроены все пары в этих
+    правилах, и имя `raspisanie_2026.pdf` приходит с сайтов так же часто.
+    """
+    assert category(cfg, name) == "Учёба"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["расписка о получении.pdf", "расписной поднос.jpg", "Роспись стен.png"],
+)
+def test_schedule_word_does_not_catch_its_neighbours(cfg, name):
+    """Соседи по корню — не расписание.
+
+    Основа обрывается на `расписан` нарочно: `распис` забрал бы и расписку, и
+    расписной поднос, а Учёба стоит первой категорией и выигрывает у всех.
+    """
+    assert category(cfg, name) != "Учёба"
+
+
 def test_managed_folders_cover_all_categories(cfg):
     """Иначе переразложение не зайдёт в папку собственной категории."""
     missing = (set(cfg.categories) | {cfg.fallback_category}) - set(cfg.managed_folders)

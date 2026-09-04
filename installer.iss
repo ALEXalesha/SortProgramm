@@ -1,6 +1,6 @@
 [Setup]
 AppName=Сортировщик загрузок
-AppVersion=3.9
+AppVersion=4.0
 AppPublisher=Alexey
 DefaultDirName={autopf}\Сортировщик загрузок
 DefaultGroupName=Сортировщик загрузок
