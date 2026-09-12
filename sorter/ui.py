@@ -299,5 +299,11 @@ class SorterApp:
 
 def launch(config_path: Path) -> None:
     root = tk.Tk()
+    # Тот же расчёт BASE_DIR, что и в main.py.
+    base_dir = (Path(sys.executable).parent if getattr(sys, "frozen", False)
+                else Path(__file__).parent.parent)
+    icon_path = base_dir / "icon.ico"
+    if icon_path.exists():
+        root.iconbitmap(str(icon_path))
     SorterApp(root, config_path)
     root.mainloop()

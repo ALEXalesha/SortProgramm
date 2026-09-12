@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QCheckBox, QVBoxLayout,
     QHBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
@@ -600,6 +601,14 @@ class GlassWindow(QWidget):
 
 def launch(config_path: Path) -> None:
     app = QApplication.instance() or QApplication(sys.argv)
+    # Тот же расчёт BASE_DIR, что и в main.py: рядом с .exe в сборке,
+    # рядом с исходниками при запуске из Python. Без иконки на уровне
+    # приложения окно и диалог истории брали стандартную иконку Qt.
+    base_dir = (Path(sys.executable).parent if getattr(sys, "frozen", False)
+                else Path(__file__).parent.parent)
+    icon_path = base_dir / "icon.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     win = GlassWindow(config_path)
     win.show()
     app.exec()
