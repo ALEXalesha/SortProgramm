@@ -233,6 +233,16 @@ def test_remove_of_a_created_category_keeps_its_folder_own():
     assert "Рецепты" in merged(edits).managed_folders
 
 
+def test_the_last_category_cannot_be_removed():
+    """Нашли свойства: без единой категории раскладывать не по чему, и следующий
+    запуск встречает жалобой «все файлы уедут в Others». Из окна раскладку
+    сломать нельзя - это договор."""
+    edits = op(ur.remove_category, {}, "Учёба")
+    edits = op(ur.remove_category, edits, "Медиа")
+    with pytest.raises(ValueError, match="последн"):
+        op(ur.remove_category, edits, "Игры")
+
+
 def test_remove_drops_file_rules_into_it():
     edits = op(ur.set_file, {}, "a.pdf", "Игры")
     assert op(ur.remove_category, edits, "Игры")["files"] == {}

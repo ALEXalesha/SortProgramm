@@ -439,7 +439,14 @@ def rename_category(edits: dict, base: Base, old: str, new: str) -> dict:
 
 def remove_category(edits: dict, base: Base, name: str) -> dict:
     edits = norm(edits)
-    current = _category(_merged(base, edits), name)
+    merged = _merged(base, edits)
+    current = _category(merged, name)
+    # Без единой категории раскладывать не по чему: всё уезжает в запасную
+    # папку, и следующий запуск встречает жалобой. Нашли это свойства
+    # (`test_user_rules_props`): из окна раскладку сломать нельзя.
+    if len(merged.categories) == 1:
+        raise ValueError(f"«{current}» — последняя категория. Без неё все файлы "
+                         f"уедут в «{base.fallback_category}».")
     origin = _origin(base, edits, current)
     if origin is not None:
         _forget_rename(edits, origin)
