@@ -95,6 +95,24 @@ def test_word_that_matches_but_moves_nothing_says_so(dialog, monkeypatch):
         "Файлов с этим словом в плане: 1, но куда они едут, не изменится.")
 
 
+def test_enter_in_the_word_field_only_adds_the_word(dialog, monkeypatch):
+    """Нашлось в собранном exe: Enter добавлял слово и заодно нажимал
+    «Добавить» категорию - кнопки QDialog по умолчанию autoDefault."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    asked = []
+    monkeypatch.setattr(ui_rules.QInputDialog, "getText",
+                        staticmethod(lambda *a, **k: asked.append(a) or ("", False)))
+    dialog.show()
+    dialog.select("Медиа")
+    dialog.word_edit.setFocus()
+    dialog.word_edit.setText("видео")
+    QTest.keyClick(dialog.word_edit, Qt.Key.Key_Return)
+    assert "видео" in dialog.word_names()
+    assert asked == [], "Enter нажал ещё и кнопку диалога"
+    assert dialog.isVisible(), "Enter закрыл диалог"
+
+
 def test_add_and_remove_word(dialog):
     dialog.select("Медиа")
     dialog.word_edit.setText("видео")

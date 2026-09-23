@@ -83,6 +83,14 @@ class RulesDialog(QDialog):
         root.addLayout(body, stretch=1)
         root.addWidget(self.hint)
         root.addLayout(footer)
+
+        # Кнопки QDialog по умолчанию autoDefault: Enter, которого поле слова
+        # не съело до конца, доходит до диалога и нажимает первую из них. В
+        # собранном exe Enter добавлял слово и тут же открывал «Новую
+        # категорию». Enter здесь значит одно — «добавить набранное слово».
+        for button in self.findChildren(QPushButton):
+            button.setAutoDefault(False)
+            button.setDefault(False)
         self._fill_categories()
 
     # --- состояние ---
