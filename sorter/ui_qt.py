@@ -10,7 +10,7 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QCheckBox, QVBoxLayout,
     QHBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
-    QLineEdit, QFileDialog, QDialog,
+    QLineEdit, QFileDialog, QDialog, QMenu,
 )
 
 from .config import Config
@@ -20,6 +20,8 @@ from .util import (PLAN_EMPTY, PLAN_NOT_BUILT, PLAN_NO_FOLDER, listing,
                    nothing_to_apply, rel_to, report, report_title,
                    settings_message)
 from . import history
+from . import user_rules
+from .ui_rules import RulesDialog
 
 
 STYLE = """
@@ -303,10 +305,13 @@ class GlassWindow(QWidget):
         clean_btn.clicked.connect(self.preview)
         history_btn = QPushButton("🕘 История")
         history_btn.clicked.connect(self.show_history)
+        rules_btn = QPushButton("⚙ Правила")
+        rules_btn.clicked.connect(self.show_rules)
         row.addWidget(browse)
         row.addWidget(open_btn)
         row.addWidget(clean_btn)
         row.addWidget(history_btn)
+        row.addWidget(rules_btn)
         return row
 
     def _row_3d(self):
@@ -341,6 +346,10 @@ class GlassWindow(QWidget):
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        # Правый клик по файлу: «всегда класть в…». Пишет my_rules.json сразу —
+        # подтверждать нечего, результат виден в той же строке плана.
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._table_menu)
         return self.table
 
     def _footer(self):
@@ -466,6 +475,68 @@ class GlassWindow(QWidget):
         dlg.exec()
         # После возможной отмены файлы вернулись — пересобираем план.
         self.preview()
+
+    def show_rules(self):
+        dlg = RulesDialog(self.config, [mv.src.name for mv in self.moves], self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._write_rules(dlg.edits)
+
+    def rule_menu(self, row: int):
+        """Меню правил для строки плана. None — строки нет."""
+        if not 0 <= row < len(self.moves):
+            return None
+        name = self.moves[row].src.name
+        menu = QMenu(self)
+        into = menu.addMenu("Всегда класть в")
+        for category in self.config.categories:
+            action = into.addAction(category)
+            action.triggered.connect(
+                lambda _=False, c=category: self.set_file_rule(name, c))
+        if user_rules.file_rule(self.config.user_rules, name):
+            action = menu.addAction("Убрать моё правило")
+            action.triggered.connect(lambda _=False: self.clear_file_rule(name))
+        return menu
+
+    def _table_menu(self, pos):
+        menu = self.rule_menu(self.table.rowAt(pos.y()))
+        if menu is not None:
+            menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def set_file_rule(self, name: str, category: str):
+        self._change_rules(user_rules.set_file, name, category)
+
+    def clear_file_rule(self, name: str):
+        self._change_rules(user_rules.clear_file, name)
+
+    def _change_rules(self, fn, *args):
+        try:
+            edits = fn(self.config.user_rules, self.config.base, *args)
+        except ValueError as exc:
+            QMessageBox.information(self, "Правило не задано", str(exc))
+            return
+        self._write_rules(edits)
+
+    def _write_rules(self, edits) -> bool:
+        """Пишет my_rules.json, перечитывает правила и перестраивает план.
+
+        На место нечитаемого файла не пишем: там правки человека, взять их
+        больше неоткуда (`user_rules.read`).
+        """
+        if self.config.user_rules_unreadable:
+            QMessageBox.warning(
+                self, "Правила не сохранены",
+                f"{user_rules.USER_RULES_FILENAME} не читается, и окно не пишет "
+                "поверх, чтобы не стереть правки. Поправь его в редакторе или "
+                "удали, и попробуй снова.")
+            return False
+        try:
+            user_rules.write(user_rules.path_for(self.config_path), edits)
+        except OSError as exc:
+            QMessageBox.critical(self, "Правила не сохранены", str(exc))
+            return False
+        self.config = Config.load(self.config_path)
+        self.preview()
+        return True
 
     def _plan_key(self) -> tuple:
         """Всё, от чего зависит план: обе папки и обе галочки.

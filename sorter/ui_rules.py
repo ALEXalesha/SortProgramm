@@ -215,7 +215,12 @@ class RulesDialog(QDialog):
             return
         moved = ur.moved_by(self.names, self.current(), ur.apply(self.config, trial))
         if not moved:
-            self.hint.setText("В текущем плане таких файлов нет.")
+            # «Таких файлов нет» врало бы про слово, которое в плане есть: файл
+            # с ним может и так ехать сюда, или его держит правило или шаблон.
+            hits = sum(text.lower() in name.lower() for name in self.names)
+            self.hint.setText(
+                f"Файлов с этим словом в плане: {hits}, но куда они едут, не изменится."
+                if hits else "В текущем плане таких файлов нет.")
             return
         parts = ", ".join(f"{k}: {v}" for k, v in moved.most_common())
         self.hint.setText(f"Заберёт из плана: {sum(moved.values())} ({parts}).")

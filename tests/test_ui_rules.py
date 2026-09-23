@@ -83,6 +83,18 @@ def test_word_preview_counts_files_it_would_take(dialog):
     assert "уже есть в категории «Документы»" in dialog.hint.text()
 
 
+def test_word_that_matches_but_moves_nothing_says_so(dialog, monkeypatch):
+    """Нашлось картинкой: «таких файлов нет» про слово, которое в плане есть -
+    просто файл с ним и так едет в эту категорию."""
+    typed(monkeypatch, "Рецепты")
+    dialog.add_category()
+    dialog.word_edit.setText("рецепт")
+    dialog.add_word()
+    dialog.word_edit.setText("борщ")
+    assert dialog.hint.text() == (
+        "Файлов с этим словом в плане: 1, но куда они едут, не изменится.")
+
+
 def test_add_and_remove_word(dialog):
     dialog.select("Медиа")
     dialog.word_edit.setText("видео")
