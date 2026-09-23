@@ -47,8 +47,10 @@ FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --prune-empty --index-filte
 git update-ref -d refs/original/refs/heads/github-main 2>/dev/null || true
 
 # Личный адрес в содержимом файлов - по всей публикуемой истории.
+# `|| true`: без совпадений git grep возвращает 1, и при pipefail скрипт молча
+# обрывался бы здесь - так и было в репозитории, где почты в файлах нет вовсе.
 DIRTY=$(git grep -I -l -F "$PRIVATE_EMAIL" $(git rev-list github-main) -- 2>/dev/null \
-        | sed 's/^[^:]*://' | sort -u | tr '\n' ' ')
+        | sed 's/^[^:]*://' | sort -u | tr '\n' ' ' || true)
 if [ -n "$DIRTY" ]; then
   echo "личный адрес в файлах: $DIRTY- переписываю содержимое"
   FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --index-filter "
