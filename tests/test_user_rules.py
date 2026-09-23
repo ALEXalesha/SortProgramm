@@ -149,3 +149,164 @@ def test_failed_write_leaves_the_old_file_and_no_temp(tmp_path, monkeypatch):
         ur.write(path, ur.norm({"files": {"b.pdf": "Медиа"}}))
     assert path.read_bytes() == before
     assert sorted(p.name for p in tmp_path.iterdir()) == [ur.USER_RULES_FILENAME]
+
+
+# --- операции ---
+
+def op(fn, edits, *args):
+    return fn(ur.norm(edits), base(), *args)
+
+
+def test_new_category_goes_last_and_becomes_own_folder():
+    edits = op(ur.add_category, {}, "Рецепты")
+    m = merged(edits)
+    assert list(m.categories)[-1] == "Рецепты" and m.categories["Рецепты"] == []
+    assert "Рецепты" in m.managed_folders
+
+
+@pytest.mark.parametrize("name", ["", "   ", "C:/Windows", "a?b", "Учёба ",
+                                  " Учёба2", "Others", "others", "учёба", "..", "a\x01"])
+def test_bad_category_names_are_refused(name):
+    with pytest.raises(ValueError):
+        op(ur.add_category, {}, name)
+
+
+def test_adding_a_removed_program_category_brings_it_back_in_place():
+    edits = op(ur.remove_category, {}, "Медиа")
+    edits = op(ur.add_category, edits, "медиа")
+    m = merged(edits)
+    assert list(m.categories) == ["Учёба", "Медиа", "Игры"]
+    assert m.categories["Медиа"] == ["клип"] and m.patterns["Медиа"]
+
+
+def test_rename_keeps_priority_and_drags_references_along():
+    m = merged(op(ur.rename_category, {}, "Игры", "Games"))
+    assert list(m.categories) == ["Учёба", "Медиа", "Games"]
+    assert m.patterns["Games"] == [r"^mc_"] and "Игры" not in m.patterns
+    assert m.overrides["старый.zip"] == "Games"
+    assert {"Игры", "Games"} <= set(m.managed_folders)
+
+
+def test_rename_chain_is_one_entry_and_rename_back_removes_it():
+    edits = op(ur.rename_category, {}, "Игры", "Games")
+    edits = op(ur.rename_category, edits, "Games", "Забавы")
+    assert edits["renamed"] == {"Игры": "Забавы"}
+    edits = op(ur.rename_category, edits, "Забавы", "Игры")
+    assert edits["renamed"] == {}
+    assert merged(edits).categories == base().categories
+
+
+def test_rename_of_a_created_category_keeps_its_words():
+    edits = op(ur.add_category, {}, "Рецепты")
+    edits = op(ur.add_word, edits, "Рецепты", "рецепт")
+    edits = op(ur.rename_category, edits, "Рецепты", "Кухня")
+    assert merged(edits).categories["Кухня"] == ["рецепт"]
+    assert "Рецепты" in merged(edits).managed_folders
+
+
+@pytest.mark.parametrize("old,new", [("Кино", "Фильмы"), ("Игры", "игры"),
+                                     ("Игры", "Медиа"), ("Игры", "a|b")])
+def test_bad_renames_are_refused(old, new):
+    with pytest.raises(ValueError):
+        op(ur.rename_category, {}, old, new)
+
+
+def test_rename_retargets_file_rules():
+    edits = op(ur.set_file, {}, "a.pdf", "Игры")
+    edits = op(ur.rename_category, edits, "Игры", "Games")
+    assert edits["files"] == {"a.pdf": "Games"}
+
+
+def test_remove_drops_references_and_says_so_but_keeps_the_folder():
+    notices = []
+    m = merged(op(ur.remove_category, {}, "Игры"), notices)
+    assert "Игры" not in m.categories and "Игры" not in m.patterns
+    assert "старый.zip" not in m.overrides
+    assert "Игры" in m.managed_folders
+    assert any("«Игры»" in n and "(1)" in n for n in notices)
+
+
+def test_remove_of_a_created_category_keeps_its_folder_own():
+    edits = op(ur.add_category, {}, "Рецепты")
+    edits = op(ur.remove_category, edits, "Рецепты")
+    assert "Рецепты" not in merged(edits).categories
+    assert "Рецепты" in merged(edits).managed_folders
+
+
+def test_remove_drops_file_rules_into_it():
+    edits = op(ur.set_file, {}, "a.pdf", "Игры")
+    assert op(ur.remove_category, edits, "Игры")["files"] == {}
+
+
+def test_word_added_and_removed_leaves_nothing_behind():
+    edits = op(ur.add_word, {}, "Учёба", "курсовая")
+    assert merged(edits).categories["Учёба"] == ["задач", "экзамен", "курсовая"]
+    edits = op(ur.remove_word, edits, "Учёба", "КУРСОВАЯ")
+    assert edits == ur.empty()
+
+
+def test_program_word_removed_and_added_back_leaves_nothing_behind():
+    edits = op(ur.remove_word, {}, "Учёба", "экзамен")
+    assert merged(edits).categories["Учёба"] == ["задач"]
+    assert op(ur.add_word, edits, "Учёба", "экзамен") == ur.empty()
+
+
+@pytest.mark.parametrize("category,word,said", [
+    ("Учёба", "x", "короче"), ("Учёба", "  a ", "короче"),
+    ("Учёба", "ЗАДАЧ", "уже есть в «Учёба»"), ("Медиа", "экзамен", "«Учёба»"),
+    ("Кино", "фильм", "нет"),
+])
+def test_bad_words_are_refused_with_a_reason(category, word, said):
+    with pytest.raises(ValueError, match=said):
+        op(ur.add_word, {}, category, word)
+
+
+def test_word_with_spaces_inside_is_kept_as_typed():
+    edits = op(ur.add_word, {}, "Медиа", " фон ")
+    assert merged(edits).categories["Медиа"][-1] == " фон "
+
+
+def test_removing_a_missing_word_is_refused():
+    with pytest.raises(ValueError):
+        op(ur.remove_word, {}, "Учёба", "курсовая")
+
+
+def test_file_rule_beats_patterns_and_words():
+    edits = op(ur.set_file, {}, "0001.mp4", "Игры")
+    m = merged(edits)
+    cfg = Config(downloads_path="x", categories=m.categories, patterns=m.patterns,
+                 overrides=m.overrides)
+    assert explain_category("0001.mp4", "", cfg) == ("Игры", BY_RULE)
+
+
+@pytest.mark.parametrize("category", ["Others", "Кино"])
+def test_bad_file_rules_are_refused(category):
+    with pytest.raises(ValueError):
+        op(ur.set_file, {}, "a.pdf", category)
+
+
+def test_clear_file_removes_the_rule_and_refuses_twice():
+    edits = op(ur.set_file, {}, "a.pdf", "Игры")
+    assert ur.file_rule(edits, "A.PDF" if os.name == "nt" else "a.pdf") == "Игры"
+    edits = op(ur.clear_file, edits, "a.pdf")
+    assert edits["files"] == {}
+    with pytest.raises(ValueError):
+        op(ur.clear_file, edits, "a.pdf")
+
+
+def test_refused_operation_changes_nothing():
+    edits = op(ur.add_word, {}, "Учёба", "курсовая")
+    before = json.dumps(edits, sort_keys=True)
+    with pytest.raises(ValueError):
+        ur.add_word(edits, base(), "Учёба", "курсовая")
+    assert json.dumps(edits, sort_keys=True) == before
+
+
+def test_moved_by_counts_files_the_word_would_take():
+    b = base()
+    cfg = Config(downloads_path="x", categories=b.categories, patterns=b.patterns,
+                 overrides=b.overrides, base=b, user_rules=ur.empty())
+    trial = op(ur.add_word, {}, "Медиа", "видео")
+    after = ur.apply(cfg, trial)
+    names = ["видео-урок.mp4", "видео.avi", "задачи.pdf", "0001.mp4"]
+    assert ur.moved_by(names, cfg, after) == {"Others": 2}

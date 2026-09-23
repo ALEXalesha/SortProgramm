@@ -325,3 +325,231 @@ def write(path, edits: dict) -> None:
         except OSError:
             pass
         raise
+
+
+# --- операции ---
+#
+# Каждая принимает правки и правила программы и возвращает НОВЫЕ правки либо
+# бросает ValueError с фразой, которую окно показывает как есть. Исходные
+# правки не меняются никогда: отказ не должен оставлять полуправку.
+
+def _merged(base: Base, edits: dict) -> Merged:
+    return merge(base, edits, [])
+
+
+def _category(merged: Merged, name) -> str:
+    found = _find(merged.categories, name) if isinstance(name, str) else None
+    if found is None:
+        raise ValueError(f"Категории «{name}» нет.")
+    return found
+
+
+def _check_name(name, merged: Merged, base: Base, ignore: str | None = None) -> None:
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Имя категории пустое.")
+    problem = folder_name_problem(name, "имя категории")
+    if problem:
+        raise ValueError(f"«{name}»: {problem}.")
+    if folder_key(name) == folder_key(base.fallback_category):
+        raise ValueError(f"«{base.fallback_category}» — запасная категория: туда "
+                         "и так попадает всё неопознанное.")
+    existing = _find([n for n in merged.categories if n != ignore], name)
+    if existing is not None:
+        raise ValueError(f"Категория «{existing}» уже есть.")
+
+
+def _origin(base: Base, edits: dict, current: str) -> str | None:
+    """Имя в `rules.json` категории, которая сейчас зовётся `current`.
+
+    None — категорию создал человек.
+    """
+    key = folder_key(current)
+    for old, new in edits["renamed"].items():
+        if folder_key(new) == key:
+            return old
+    gone = {folder_key(n) for n in [*edits["removed"], *edits["renamed"]]}
+    found = _find(base.categories, current)
+    if found is not None and folder_key(found) not in gone:
+        return found
+    return None
+
+
+def _edit_key(edits: dict, current: str) -> str | None:
+    return _find(edits["categories"], current)
+
+
+def _keep(edits: dict, name: str) -> None:
+    if _find(edits["keep_folders"], name) is None:
+        edits["keep_folders"].append(name)
+
+
+def _forget_rename(edits: dict, origin: str) -> None:
+    for old in [o for o in edits["renamed"] if folder_key(o) == folder_key(origin)]:
+        del edits["renamed"][old]
+
+
+def _tidy(edits: dict) -> dict:
+    """Пустая правка слов без `created` ничего не значит — убираем."""
+    edits["categories"] = {
+        name: edit for name, edit in edits["categories"].items()
+        if edit.get("add") or edit.get("remove") or edit.get("created")}
+    return edits
+
+
+def add_category(edits: dict, base: Base, name: str) -> dict:
+    edits = norm(edits)
+    merged = _merged(base, edits)
+    was_removed = _find(edits["removed"], name) if isinstance(name, str) else None
+    if was_removed is not None and _find(merged.categories, name) is None:
+        # Имя удалённой категории программы: возвращаем её саму, со словами и
+        # шаблонами программы и на её прежнем месте.
+        edits["removed"].remove(was_removed)
+        return _tidy(edits)
+    _check_name(name, merged, base)
+    key = _edit_key(edits, name)
+    if key is None:
+        edits["categories"][name] = {"add": [], "remove": [], "created": True}
+    else:
+        edits["categories"][key]["created"] = True
+    return _tidy(edits)
+
+
+def rename_category(edits: dict, base: Base, old: str, new: str) -> dict:
+    edits = norm(edits)
+    merged = _merged(base, edits)
+    current = _category(merged, old)
+    if isinstance(new, str) and folder_key(new) == folder_key(current):
+        raise ValueError("Новое имя совпадает со старым.")
+    _check_name(new, merged, base, ignore=current)
+    origin = _origin(base, edits, current)
+    if origin is not None:
+        _forget_rename(edits, origin)
+        if folder_key(new) != folder_key(origin):
+            edits["renamed"][origin] = new
+    key = _edit_key(edits, current)
+    if key is not None:
+        edits["categories"] = {(new if k == key else k): v
+                               for k, v in edits["categories"].items()}
+    _keep(edits, current)
+    for filename, category in edits["files"].items():
+        if folder_key(category) == folder_key(current):
+            edits["files"][filename] = new
+    return _tidy(edits)
+
+
+def remove_category(edits: dict, base: Base, name: str) -> dict:
+    edits = norm(edits)
+    current = _category(_merged(base, edits), name)
+    origin = _origin(base, edits, current)
+    if origin is not None:
+        _forget_rename(edits, origin)
+        edits["removed"].append(origin)
+    key = _edit_key(edits, current)
+    if key is not None:
+        del edits["categories"][key]
+    _keep(edits, current)
+    edits["files"] = {f: c for f, c in edits["files"].items()
+                      if folder_key(c) != folder_key(current)}
+    return _tidy(edits)
+
+
+def _word_edit(edits: dict, current: str) -> dict:
+    key = _edit_key(edits, current)
+    if key is None:
+        key = current
+        edits["categories"][key] = {"add": [], "remove": []}
+    return edits["categories"][key]
+
+
+def add_word(edits: dict, base: Base, category: str, word: str) -> dict:
+    edits = norm(edits)
+    merged = _merged(base, edits)
+    current = _category(merged, category)
+    if not isinstance(word, str) or len(word.strip()) < MIN_WORD:
+        raise ValueError(f"Слово короче {MIN_WORD} знаков: подстрокой оно "
+                         "зацепит почти любое имя.")
+    if _has_word(merged.categories[current], word):
+        raise ValueError(f"Слово «{word}» уже есть в «{current}».")
+    for other, words in merged.categories.items():
+        if other != current and _has_word(words, word):
+            raise ValueError(f"Слово «{word}» уже есть в категории «{other}». "
+                             "Сначала убери его оттуда.")
+    edit = _word_edit(edits, current)
+    low = word.lower()
+    edit["remove"] = [w for w in edit["remove"] if w.lower() != low]
+    if not _has_word(_merged(base, edits).categories[current], word):
+        edit["add"].append(word)
+    return _tidy(edits)
+
+
+def remove_word(edits: dict, base: Base, category: str, word: str) -> dict:
+    edits = norm(edits)
+    merged = _merged(base, edits)
+    current = _category(merged, category)
+    if not isinstance(word, str) or not _has_word(merged.categories[current], word):
+        raise ValueError(f"В «{current}» нет слова «{word}».")
+    edit = _word_edit(edits, current)
+    low = word.lower()
+    edit["add"] = [w for w in edit["add"] if w.lower() != low]
+    if _has_word(_merged(base, edits).categories[current], word):
+        edit["remove"].append(word)
+    return _tidy(edits)
+
+
+def set_file(edits: dict, base: Base, filename: str, category: str) -> dict:
+    edits = norm(edits)
+    if isinstance(category, str) and folder_key(category) == folder_key(base.fallback_category):
+        raise ValueError(
+            f"«{base.fallback_category}» — запасная категория. Правило туда "
+            f"ничего не решает: без него файл уедет в «{base.fallback_category}» "
+            "сам, а в новую категорию уже не попадёт никогда.")
+    current = _category(_merged(base, edits), category)
+    if not isinstance(filename, str) or not filename.strip():
+        raise ValueError("Имя файла пустое.")
+    mine = name_key(filename)
+    edits["files"] = {f: c for f, c in edits["files"].items() if name_key(f) != mine}
+    edits["files"][filename] = current
+    return edits
+
+
+def clear_file(edits: dict, base: Base, filename: str) -> dict:
+    edits = norm(edits)
+    if file_rule(edits, filename) is None:
+        raise ValueError(f"Для «{filename}» нет правила из окна.")
+    mine = name_key(filename)
+    edits["files"] = {f: c for f, c in edits["files"].items() if name_key(f) != mine}
+    return edits
+
+
+def file_rule(edits: dict, filename: str) -> str | None:
+    """Категория из правила окна для этого файла. None — правила нет."""
+    mine = name_key(filename)
+    for name, category in norm(edits)["files"].items():
+        if name_key(name) == mine:
+            return category
+    return None
+
+
+# --- для окна ---
+
+def apply(config, edits: dict):
+    """Тот же конфиг, но с этими правками вместо прежних. Файлы не трогает."""
+    edits = norm(edits)
+    merged = merge(config.base, edits, [])
+    return replace(config, categories=merged.categories, patterns=merged.patterns,
+                   overrides=merged.overrides,
+                   managed_folders=merged.managed_folders, user_rules=edits)
+
+
+def moved_by(names, before, after) -> Counter:
+    """Сколько файлов из `names` сменят категорию: {откуда: сколько}.
+
+    Считается по имени: содержимое текстовых файлов диалог не читает.
+    """
+    from .classifier import explain_category
+    moved: Counter = Counter()
+    for name in names:
+        old = explain_category(name, "", before)[0]
+        if explain_category(name, "", after)[0] != old:
+            moved[old] += 1
+    return moved
