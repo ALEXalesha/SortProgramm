@@ -18,3 +18,6 @@ __pycache__/
 .remember/logs/
 .remember/tmp/
 .sorter/
+
+# Правки правил из окна: у каждого человека свои (см. sorter/user_rules.py)
+my_rules.json
