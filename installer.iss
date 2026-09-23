@@ -30,10 +30,12 @@ Source: "dist\Сортировщик.exe"; DestDir: "{app}"; Flags: ignoreversio
 ; rules.json — правила раскладки, их поставляет программа: обновляем всегда,
 ; иначе новые категории не доедут до уже установленной копии.
 Source: "rules.json"; DestDir: "{app}"; Flags: ignoreversion
-; config.json и overrides.json принадлежат пользователю (пути, ручные правила) —
-; при обновлении не трогаем.
-Source: "config.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
-Source: "overrides.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
+; config.json, overrides.json и my_rules.json принадлежат пользователю и
+; установщиком не поставляются вовсе: раньше он подкладывал всем файлы
+; автора — его папку загрузок, вынос 3D в его папку и двести ручных правил
+; по именам его загрузок. Первый запуск без config.json — обычное дело
+; (Config.load), окно запишет его само. Уже лежащие файлы установщик
+; не трогает и так.
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

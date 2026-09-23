@@ -964,9 +964,14 @@ class Config:
         if isinstance(downloads, str):
             downloads = downloads.strip()
         if not isinstance(downloads, str) or not downloads:
-            problems.append(
-                f"{NO_DOWNLOADS_PROBLEM} "
-                f"Взята папка по умолчанию: {DEFAULT_DOWNLOADS}")
+            # Файла нет вовсе — это первый запуск, а не поломка: жаловаться не
+            # на что, окно запишет config.json само при закрытии. Установщик
+            # его больше не кладёт — раньше он подкладывал всем config.json
+            # автора, с его папками.
+            if path.exists():
+                problems.append(
+                    f"{NO_DOWNLOADS_PROBLEM} "
+                    f"Взята папка по умолчанию: {DEFAULT_DOWNLOADS}")
             downloads = DEFAULT_DOWNLOADS
 
         rules_path = path.with_name(RULES_FILENAME)

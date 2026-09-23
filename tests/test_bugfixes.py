@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import main as main_module
-from sorter.config import Config, usable_3d_path
+from sorter.config import DEFAULT_DOWNLOADS, Config, usable_3d_path
 from sorter.classifier import explain_category, match_category, match_type
 from sorter.history import list_operations, undo_operation
 from sorter.mover import apply, undo, Result
@@ -2938,6 +2938,28 @@ def test_healthy_settings_are_still_saved(tmp_path):
 
     saved = json.loads(cfg_path.read_text(encoding="utf-8"))
     assert saved["downloads_path"] == str(tmp_path / "новая")
+
+
+def test_first_run_without_settings_file_is_not_a_complaint(tmp_path):
+    """Нет config.json - это первый запуск, а не поломка.
+
+    Установщик раньше подкладывал config.json автора: с его папкой загрузок и
+    включённым выносом 3D в `C:/Drive/Alexey/All_3d` - у любого другого
+    человека программа начала бы складывать модели туда. Теперь файла в
+    установщике нет, и первый запуск обязан пройти без жалоб: папка по
+    умолчанию, вынос 3D выключен, config.json окно запишет само при закрытии.
+    """
+    (tmp_path / "rules.json").write_text(json.dumps({
+        "categories": {"Медиа": ["клип"]},
+        "type_map": {"Videos": ["mp4"]},
+        "managed_folders": ["Медиа", "Videos", "Others", "Misc"],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = Config.load(tmp_path / "config.json")
+
+    assert config.problems == []
+    assert config.downloads_path == DEFAULT_DOWNLOADS
+    assert not config.external_3d.get("enabled")
 
 
 def test_missing_settings_file_is_still_created(tmp_path):

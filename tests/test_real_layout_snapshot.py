@@ -38,6 +38,12 @@ ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
 SNAPSHOT_PATH = Path(__file__).resolve().parent / "fixtures" / "real_layout.json"
 
+# Снимок снят с настоящей папки загрузок автора - это история его загрузок, и в
+# открытый репозиторий она не уезжает. Без файла проверять не с чем.
+pytestmark = pytest.mark.skipif(
+    not SNAPSHOT_PATH.exists(),
+    reason="снимка настоящей раскладки нет: он личный и в открытый репозиторий не входит")
+
 
 def place(config: Config, name: str) -> list[str]:
     """Куда правила кладут файл с таким именем: [категория, тип]."""
