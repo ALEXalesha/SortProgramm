@@ -1,0 +1,37 @@
+# Проверки на каждый пуш.
+#
+# Раннер windows: программа под Windows, и часть проверок держится за её
+# правила - имя файла без учёта регистра, запрещённые в имени символы, буква
+# диска. Окна тестов поднимаются сами с QT_QPA_PLATFORM=offscreen.
+#
+# Снимок настоящей раскладки (tests/test_real_layout_snapshot.py) здесь
+# пропускается: он снят с личной папки загрузок автора и в открытый
+# репозиторий не входит.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: Проверки
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Зависимости
+        run: pip install -r requirements-dev.txt
+
+      - name: Тесты и свойства
+        run: python -m pytest -q

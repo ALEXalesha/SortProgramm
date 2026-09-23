@@ -1,0 +1,4 @@
+# Для тестов: интерфейс и свойства на hypothesis.
+PyQt6>=6.6
+pytest
+hypothesis
