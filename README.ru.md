@@ -1,4 +1,18 @@
+<div align="center">
+
 # Сортировщик загрузок
+
+**Раскладывает папку «Загрузки» по категориям и типам, не трогая чужие папки программ и игр. Сначала показывает план, потом двигает, и всё можно откатить.**
+
+[Скачать для Windows](https://github.com/ALEXalesha/SortProgramm/releases/latest) &nbsp;·&nbsp; [English version of this file](README.md)
+
+[![CI](https://github.com/ALEXalesha/SortProgramm/actions/workflows/ci.yml/badge.svg)](https://github.com/ALEXalesha/SortProgramm/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ALEXalesha/SortProgramm?color=16a34a)](https://github.com/ALEXalesha/SortProgramm/releases/latest)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+<img src="docs/screenshots/window.png" width="860" alt="План раскладки: файл, куда поедет и почему">
+
+</div>
 
 Программа наводит порядок в папке «Загрузки»: раскладывает файлы по категориям и
 типам, не трогая чужие папки программ и игр. Есть графический интерфейс (PyQt6),
@@ -1549,3 +1563,20 @@ UTF-8 с BOM», «в UTF-16» или «в ANSI» (файл объявлялся 
   3D. Теперь на место нечитаемого `config.json` окно не пишет и говорит об этом
   при старте. У `overrides.json` этой заботы больше не нужно: писать в него
   некому, программа его только читает.
+
+## Кадры для README собираются программой
+
+`tools/make_screenshots.py` поднимает окно на выдуманной папке загрузок во
+временном каталоге, с настоящими `rules.json` и без личных файлов автора, и
+снимает кадры с самих виджетов через `QWidget.grab()`. Снимок экрана тут не
+годится: окно может оказаться позади других, и в кадр попадёт чужое.
+
+```bash
+python tools\make_screenshots.py
+```
+
+<img src="docs/screenshots/rules.png" width="640" alt="Диалог «Правила раскладки»: слово ещё не добавлено, а окно уже считает, сколько файлов оно заберёт">
+
+## Лицензия
+
+MIT, файл [LICENSE](LICENSE).
