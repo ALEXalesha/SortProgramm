@@ -17,7 +17,9 @@ CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
 @pytest.fixture(scope="module")
 def cfg() -> Config:
-    config = Config.load(CONFIG_PATH)
+    # Без my_rules.json: снимок проверяет правила программы, а правки человека
+    # в папке разработчика ломали бы его на его машине.
+    config = Config.load(CONFIG_PATH, user=False)
     config.overrides = {}  # правила проверяем отдельно, тут интересны сами слова
     return config
 
@@ -315,5 +317,5 @@ def test_shipped_rules_read_without_complaints():
     расширение в двух типах) писались по настоящим поломкам в этом самом файле.
     Молчание при чтении — их итог.
     """
-    config = Config.load(CONFIG_PATH)
+    config = Config.load(CONFIG_PATH, user=False)
     assert config.problems == []

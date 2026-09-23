@@ -310,3 +310,57 @@ def test_moved_by_counts_files_the_word_would_take():
     after = ur.apply(cfg, trial)
     names = ["видео-урок.mp4", "видео.avi", "задачи.pdf", "0001.mp4"]
     assert ur.moved_by(names, cfg, after) == {"Others": 2}
+
+
+# --- Config.load ---
+
+RULES = {
+    "categories": {"Медиа": ["клип"], "Документы": ["отчёт"]},
+    "patterns": {"Медиа": ["^[0-9]{4}[.]mp4$"]},
+    "type_map": {"Videos": ["mp4"], "Documents": ["pdf"]},
+    "managed_folders": ["Медиа", "Документы", "Videos", "Documents", "Others", "Misc"],
+    "fallback_category": "Others", "fallback_type": "Misc",
+}
+
+
+def setup(tmp_path, edits=None):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"downloads_path": str(tmp_path)}), encoding="utf-8")
+    (tmp_path / "rules.json").write_text(json.dumps(RULES, ensure_ascii=False),
+                                         encoding="utf-8")
+    if edits is not None:
+        ur.write(ur.path_for(tmp_path / "config.json"), ur.norm(edits))
+    return tmp_path / "config.json"
+
+
+def test_load_applies_user_rules_without_new_problems(tmp_path):
+    path = setup(tmp_path, {"categories": {"Рецепты": {"add": ["рецепт"], "remove": [],
+                                                       "created": True}},
+                            "renamed": {"Медиа": "Видео"}})
+    cfg = Config.load(path)
+    assert list(cfg.categories) == ["Видео", "Документы", "Рецепты"]
+    assert cfg.patterns == {"Видео": RULES["patterns"]["Медиа"]}
+    assert cfg.problems == []
+    assert cfg.base.categories == RULES["categories"]
+    assert cfg.user_rules["renamed"] == {"Медиа": "Видео"}
+
+
+def test_load_without_user_rules_ignores_the_file(tmp_path):
+    path = setup(tmp_path, {"renamed": {"Медиа": "Видео"}})
+    assert list(Config.load(path, user=False).categories) == ["Медиа", "Документы"]
+
+
+def test_unreadable_user_rules_lock_writing(tmp_path):
+    path = setup(tmp_path)
+    ur.path_for(path).write_text("{", encoding="utf-8")
+    cfg = Config.load(path)
+    assert cfg.user_rules_unreadable
+    assert any(ur.USER_RULES_FILENAME in p for p in cfg.problems)
+
+
+def test_file_rule_from_the_window_is_not_called_an_argument_with_a_pattern(tmp_path):
+    """Правило из окна над шаблоном - решение человека, а не спор с программой."""
+    path = setup(tmp_path, {"files": {"0001.mp4": "Документы"}})
+    cfg = Config.load(path)
+    assert cfg.notices == []
+    assert explain_category("0001.mp4", "", cfg) == ("Документы", BY_RULE)

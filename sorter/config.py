@@ -906,10 +906,21 @@ class Config:
     # для программы только читаемым, и защищать его от самих себя больше не от
     # чего.
     settings_unreadable: bool = False
+    # Правила программы до правок из окна (`user_rules.Base`) и сами правки.
+    # Окно показывает, что пришло с программой, а что добавил человек, и
+    # строит новые правки поверх этих.
+    base: object | None = None
+    user_rules: dict = field(default_factory=dict)
+    # `my_rules.json` есть, но читать его нельзя: окно не пишет поверх.
+    user_rules_unreadable: bool = False
 
     @classmethod
-    def load(cls, path: str | Path) -> "Config":
+    def load(cls, path: str | Path, *, user: bool = True) -> "Config":
         """Читает настройки из `path` и правила из `rules.json` рядом.
+
+        Поверх правил накладываются правки из окна (`my_rules.json`, см.
+        `user_rules`). `user=False` — без них: снимки настоящих правил
+        проверяют правила программы, а не правки человека.
 
         Если `rules.json` нет — это конфиг старой версии, где правила лежали
         вместе с настройками. Тогда берём их оттуда, чтобы программа не
@@ -1028,6 +1039,18 @@ class Config:
         overrides = _drop_frozen_rules(
             overrides, fallback_category, overrides_name, notices)
 
+        # Правки из окна поверх правил программы (`user_rules`). Импорт здесь,
+        # а не наверху: модулю нужны имена из этого файла.
+        from . import user_rules
+        base = user_rules.Base(categories, patterns, overrides, managed_folders,
+                               fallback_category)
+        edits, user_unreadable = (
+            user_rules.read(user_rules.path_for(path), problems) if user
+            else (user_rules.empty(), False))
+        merged = user_rules.merge(base, edits, notices)
+        categories, patterns = merged.categories, merged.patterns
+        overrides, managed_folders = merged.overrides, merged.managed_folders
+
         # Раскладывать не по чему. Снаружи это выглядит как обычная работа:
         # план построен, файлы разложены, жалоб нет — только все до одного
         # уехали в запасную папку, и отличить это от честно неопознанных
@@ -1077,7 +1100,12 @@ class Config:
 
         # Ручное правило поверх шаблона: шаблон узнаёт файл наверняка, а правило
         # стоит выше и молча уводит его в другую категорию.
-        _check_overridden_patterns(overrides, patterns, overrides_name, notices)
+        # Правило для файла из окна над шаблоном — решение человека, принятое
+        # только что и глядя на план, а не спор с программой.
+        mine = set(edits["files"])
+        _check_overridden_patterns(
+            {k: v for k, v in overrides.items() if k not in mine},
+            patterns, overrides_name, notices)
 
         # Папку создаёт любая категория, откуда бы она ни пришла: из правил, из
         # шаблона, из ручной записи в overrides.json или из запасной строки.
@@ -1101,6 +1129,9 @@ class Config:
             problems=problems,
             notices=notices,
             settings_unreadable=settings_unreadable,
+            base=base,
+            user_rules=edits,
+            user_rules_unreadable=user_unreadable,
         )
 
     def save(self, path: str | Path) -> None:

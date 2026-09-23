@@ -61,7 +61,9 @@ def rules_only_config() -> Config:
     Файлы, чьё место держит `overrides.json`, от правки правил не двигаются
     вовсе — за них тут бояться нечего.
     """
-    config = Config.load(CONFIG_PATH)
+    # Без my_rules.json: снимок проверяет правила программы, а правки человека
+    # в папке разработчика ломали бы его на его машине.
+    config = Config.load(CONFIG_PATH, user=False)
     config.overrides = {}
     return config
 
@@ -112,7 +114,7 @@ def _regenerate() -> None:
     """
     from sorter.scanner import scan
 
-    full = Config.load(CONFIG_PATH)
+    full = Config.load(CONFIG_PATH, user=False)
     if full.problems:
         raise SystemExit("сначала почини настройки:\n  "
                          + "\n  ".join(full.problems))
