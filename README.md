@@ -49,7 +49,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-656 tests, about 25 seconds, covering the scanner, classifier, patterns, planner, mover, config, history, CLI and both windows.
+674 tests, about 25 seconds, covering the scanner, classifier, patterns, planner, mover, config, history, CLI and both windows.
 
 `tests/test_user_rules_props.py` runs **hypothesis properties** for the rules editor, 150 to 300 random examples each. It builds random program rules and random chains of user actions, successful and refused, with deliberately bad names, and checks the whole contract after every action: no reference to a missing category, every category is a folder of its own, `managed_folders` never shrinks, no keyword lives in two categories, a refused action changes nothing, the file round-trips, edits survive an update of `rules.json`, and a rule for a file beats everything else.
 
@@ -71,7 +71,7 @@ python main.py --path "D:/Downloads" --apply
 python main.py --cli --deep            # re-sort what was sorted before
 ```
 
-Ready Windows builds, an installer and a portable zip, are on the [releases page](https://github.com/ALEXalesha/SortProgramm/releases/latest). The installer ships no settings of its own: the first start uses your Downloads folder and writes `config.json` itself.
+Ready Windows builds, an installer and a portable zip, are on the [releases page](https://github.com/ALEXalesha/SortProgramm/releases/latest). The installer ships no settings of its own: the first start uses your Downloads folder and writes `config.json` itself. The window opens where it was closed and at the same size (`window.json` next to `config.json`); if that monitor is gone, it opens on the one you have.
 
 ## Screenshots are generated
 

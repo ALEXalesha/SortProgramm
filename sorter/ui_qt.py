@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QFileDialog, QDialog, QMenu,
 )
 
+from . import tk_window_state, window_geometry
 from .config import Config
 from .planner import build_plan, external_3d_warning, Move
 from .mover import apply
@@ -238,6 +239,11 @@ class GlassWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.resize(860, 600)
         self.setWindowTitle("Сортировщик загрузок")
+        # Окно открывается там и такого размера, где его закрыли (4.2). window.json рядом
+        # с config.json, а не в нём: место окна - не настройка, и Config о нём не знает.
+        self.window_path = config_path.with_name("window.json")
+        saved = tk_window_state.load(self.window_path)
+        window_geometry.restore(self, saved.get("qt") if isinstance(saved, dict) else None)
 
         self._build()
 
@@ -614,7 +620,15 @@ class GlassWindow(QWidget):
 
     def closeEvent(self, e):
         self._save_settings()
+        self._save_window()
         super().closeEvent(e)
+
+    def _save_window(self):
+        """Ключ qt в window.json; ключи старого окна Tkinter (--tk) остаются как были."""
+        saved = tk_window_state.load(self.window_path)
+        state = saved if isinstance(saved, dict) else {}
+        state["qt"] = window_geometry.encode(self)
+        tk_window_state.save(self.window_path, state)
 
     def do_apply(self):
         """Выполняет показанный план.

@@ -1,13 +1,15 @@
 [Setup]
 AppName=Сортировщик загрузок
-AppVersion=4.1
+AppVersion=4.2.0
 AppPublisher=Alexey
 DefaultDirName={autopf}\Сортировщик загрузок
 DefaultGroupName=Сортировщик загрузок
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\Сортировщик.exe
 OutputDir=release
-OutputBaseFilename=СортировщикЗагрузок-Setup
+; Латиницей: GitHub выкидывает кириллицу из имён файлов выпуска (у 4.1.0 остались
+; «-Setup.exe» и «-portable.zip»).
+OutputBaseFilename=SortProgramm-4.2.0-setup
 SetupIconFile=icon.ico
 PrivilegesRequired=lowest
 Compression=lzma2

@@ -8,6 +8,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+from . import tk_window_state
 from .config import Config
 from .planner import build_plan, external_3d_warning, Move
 from .mover import apply
@@ -70,8 +71,12 @@ class SorterApp:
         self.root = root
 
         root.title("Сортировщик загрузок")
-        root.geometry("760x520")
         root.minsize(620, 420)
+        # Окно открывается там и такого размера, где его закрыли (4.2); файл общий с
+        # окном PyQt, у того свой ключ.
+        self.window = tk_window_state.Remember(
+            root, config_path.with_name("window.json"),
+            {"width": 760, "height": 520, "minWidth": 620, "minHeight": 420}, key="tk")
 
         self._build_header(root)
         self._build_table(root)
@@ -184,6 +189,7 @@ class SorterApp:
 
     def _on_close(self):
         self._save_settings()
+        self.window.save()
         self.root.destroy()
 
     def open_downloads(self):
