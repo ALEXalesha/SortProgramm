@@ -130,9 +130,12 @@ class Remember:
     обычная запоминается на каждом <Configure>, пока окно не развёрнуто.
 
     key - если файл общий с другим окном (у SortProgramm окна PyQt и Tkinter), своё
-    место лежит под этим ключом, чужие ключи при записи не трогаются."""
+    место лежит под этим ключом, чужие ключи при записи не трогаются.
 
-    def __init__(self, root, path: Path, opts: dict, key: str | None = None):
+    opts=None - окно постоянного размера (resizable(False, False)): размер берётся у
+    виджетов, запоминается только место. Звать после того, как виджеты разложены."""
+
+    def __init__(self, root, path: Path, opts: dict | None = None, key: str | None = None):
         self.root = root
         self.path = Path(path)
         self.key = key
@@ -140,8 +143,22 @@ class Remember:
         data = load(self.path)
         saved = (data.get(key) if isinstance(data, dict) else None) if key else data
         areas = work_areas(root)
+        fixed = opts is None
+        if fixed:
+            root.update_idletasks()
+            w, h = root.winfo_reqwidth(), root.winfo_reqheight()
+            opts = {"width": w, "height": h, "minWidth": w, "minHeight": h}
+            if isinstance(saved, dict):
+                saved = {**saved, "width": w, "height": h, "maximized": False}
         placed = restore(saved, areas, opts)
-        root.geometry(geometry_text(placed, areas))
+        text = geometry_text(placed, areas)
+        # Постоянному окну - только место: размер задают виджеты, и чужая цифра (шрифт
+        # или масштаб экрана поменялся) обрезала бы их.
+        size = f"{placed['width']}x{placed['height']}"
+        if not fixed:
+            root.geometry(text)
+        elif text != size:
+            root.geometry(text[len(size):])
         if placed["maximized"]:
             try:
                 root.state("zoomed")
